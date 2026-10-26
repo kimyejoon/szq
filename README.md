@@ -1,31 +1,99 @@
 # szq
 
-**A shared queue, a git-aware result cache and guard hooks for the heavy commands your AI coding agents keep running.**
+### Stop running the same check eight times.
+
+**One shared queue. One execution for identical work. Less CPU contention and less noise for AI coding agents.**
 
 [![CI](https://github.com/kimyejoon/szq/actions/workflows/ci.yml/badge.svg)](https://github.com/kimyejoon/szq/actions/workflows/ci.yml)
-[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Node.js 18+](https://img.shields.io/badge/Node.js-18%2B-339933)
 
-English · [한국어](README.ko.md)
+**English** · [한국어](README.ko.md) · [Quick start](#quick-start) · [Benchmarks](#benchmarks) · [Contributing](#contributing)
 
 ---
 
-Run five Claude Code / Codex / Cursor sessions on one laptop and each of them will, many times an hour,
-start `tsc --noEmit`, `vitest` or `jest` - often the *same* check on the *same* code, at the *same* moment.
-The machine melts (a load average of 50+ on an 8-core laptop is easy to reach), your dev server times out,
-most of that CPU time is duplicated work, and every run dumps thousands of lines into the agent's context.
+Running Claude Code, Codex, and Cursor side by side is great—until every agent runs the same `tsc`, `vitest`, or `jest` command at once. Your fans spin up, your development server struggles, and thousands of log lines consume the agents' context windows.
 
-`szq` fixes this at the command level:
+**szq** is a lightweight, zero-dependency Node.js CLI that coordinates expensive checks **across sessions on the same machine**. No daemon to configure, no changes to your test runner, and no need to give up working in parallel.
 
-1. **One queue per machine.** Heavy commands run through a FIFO queue. It starts with CPUs / 4 parallel runs, admits
-   more while the CPU has headroom, and drops to one when the machine is busy for other reasons.
-   Waiting agents see their position; a human typing in a terminal goes first.
-2. **Identical runs run once.** Requests are fingerprinted by *command + the content of your git working tree*.
-   If N agents ask for the same thing, one runs it and the others receive the same output and exit code.
-   A repeated call on unchanged code returns instantly from the cache - and `szq explain` tells you why a call missed.
-3. **Agents are told, not tricked.** A hook for your agent blocks a direct `tsc`/`vitest`/`jest` and tells the model to
-   re-run it as `szq --digest ...`. No silent rewriting: the agent learns the rule.
-4. **Agents read less.** `--digest` replaces thousands of output lines by the head, the tail and the error lines,
-   and prints where the full log is. Same information that matters, ~97% less context in our benchmark.
+```text
+WITHOUT szq                           WITH szq
+
+Agent A ── tsc ─┐                    Agent A ── tsc ─┐
+Agent B ── tsc ─┼── 3 executions      Agent B ── tsc ─┼── 1 execution
+Agent C ── tsc ─┘                    Agent C ── tsc ─┘   └─ shared result
+
+Every run dumps a full log.           Agents get concise digests;
+                                       full logs stay available.
+```
+
+## Why szq?
+
+| Problem | What szq does |
+|---|---|
+| Too many heavyweight checks at once | **Machine-wide adaptive queue** regulates concurrency and backs off when the machine is busy. Human-initiated commands receive priority. |
+| Multiple agents request identical checks | **In-flight deduplication** executes matching requests once and shares the output and exit code. |
+| Tests run repeatedly on unchanged code | **Git working-tree-aware cache** reuses eligible results; `szq explain` shows why a cache lookup missed. |
+| Huge command output fills agent context | **`--digest`** keeps the head, tail, and error lines inline while preserving the complete log. |
+| Agents keep bypassing your preferred command | **Guard hooks** deny direct calls with guidance to retry through szq—no silent command rewriting. |
+
+### Measured, not imagined
+
+On the project's **Apple M1 Pro benchmark**, with eight callers and a two-job concurrency cap, szq compared with tman 0.7.10 as follows:
+
+| Workload | tman | szq | Observed speedup |
+|---|---:|---:|---:|
+| 8 identical TypeScript checks requested concurrently | 22.32 s | 4.46 s | **5.01×** |
+| 8 repeated TypeScript checks after warm-up | 30.23 s | 0.59 s | **51.11×** |
+| 8 distinct ~2 CPU-second jobs | 13.09 s | 9.20 s | **1.42×** |
+
+In a separate output benchmark, digesting **2,502 lines** reduced estimated context from **~8,968 to ~280 tokens (~97%)** while retaining the error.
+
+These are *specific measured workloads, not general speed guarantees*. Cached runs and concurrent duplicate requests benefit most; queueing independent work can make total completion time **slower**. Read the [full benchmarks](#benchmarks) and [reproducible methodology](bench/TMAN.md).
+
+## Quick start
+
+**Requirements:** Node.js 18+; Git for content-based caching (queueing works without it). No runtime dependencies.
+
+```bash
+# Install from source (available now)
+git clone https://github.com/kimyejoon/szq.git
+cd szq
+npm link
+
+# Check your installation
+szq doctor
+
+# Run expensive checks through the shared queue
+szq tsc --noEmit
+szq vitest run path/to/file.test.ts
+szq pnpm --filter api test
+
+# See what's running and what you've saved
+szq status
+szq stats
+```
+
+> **npm installation:** `npm install -g szq` is intended for use **after the first npm publication**. The repository README does not confirm the package is published yet.
+
+### Integrate with your coding agent
+
+Install a hook for the agents you use:
+
+```bash
+szq hook install claude-code
+szq hook install codex       # Then approve/trust the hook with /hooks in Codex
+szq hook install cursor      # Also supports windsurf, copilot, gemini (experimental)
+szq doctor
+```
+
+When an agent attempts to run `tsc` directly, the hook blocks the call **with an explanation** and instructs it to retry via `szq --digest tsc --noEmit`. Hooks can be removed using `szq hook uninstall <agent>`. Installation is idempotent and backs up existing configuration.
+
+You can also integrate agents without supported hooks using `szq shim install` or copy rules from `szq rules`. See [Agent support](#agent-support).
+
+## See it in action
+
+Here's an **illustrative** session showing queue status, digest output, a cache hit, and an explained cache miss:
 
 ```text
 # illustrative session
@@ -46,43 +114,18 @@ different from the last run because:
   - modified 1 file(s): src/billing/invoice.ts
 ```
 
-> **Status: 0.1.0.** Works on macOS and Linux. Windows is implemented and tested in CI but the author has not
-> used it on real Windows hardware (see [Platform support](#platform-support)). Gemini CLI support is experimental.
+> **Project status — v0.1.0.** macOS is tested locally; Linux and Windows are covered by CI. The author has **not validated Windows on physical Windows hardware**. Gemini CLI hooks are experimental. See [Platform support](#platform-support).
 
-## Install
+---
 
-```sh
-npm install -g szq            # after the first npm release
-# or from source:
-git clone https://github.com/kimyejoon/szq.git && cd szq && npm link
-```
+## How it works
 
-Requires Node.js >= 18 and `git` (without git szq still queues, it just cannot cache). No dependencies.
+1. **Queue:** A shared FIFO queue starts at roughly one job per four CPU cores and expands when there's headroom. It can limit effective concurrency to one under heavy external load.
+2. **Share:** For identical commands in the same repository directory and working-tree state, concurrently requesting agents share one execution.
+3. **Cache:** Subsequent eligible requests can reuse results when the relevant inputs are unchanged. Success results default to 24 hours of retention, failures to 10 minutes.
+4. **Digest:** Agent-facing logs retain the diagnostically useful lines in the response while keeping full output retrievable through `szq logs`.
 
-## Quick start
-
-```sh
-# 1. put the guard in front of your agent (installs are idempotent and keep a backup)
-szq hook install claude-code
-szq hook install codex          # then run `/hooks` inside Codex once to trust it
-szq hook install cursor         # also: windsurf, copilot, gemini (experimental)
-
-# 2. check everything
-szq doctor
-
-# 3. use it yourself, too
-szq tsc --noEmit
-szq vitest run path/to/file.test.ts
-szq pnpm --filter api test
-szq status                      # who is running / waiting
-szq stats                       # how much work the cache and sharing saved you
-```
-
-From now on, when an agent tries `tsc --noEmit` directly it gets:
-
-> `[szq] Running 'tsc' directly is blocked on this machine. ... Re-run the same command prefixed with szq --digest, e.g. szq --digest tsc --noEmit ...`
-
-and retries with `szq --digest`. Remove the hook any time with `szq hook uninstall <agent>`.
+**Important:** This is a machine-local optimization, not a remote build cache or a security sandbox. Git-ignored and external inputs need explicit consideration for cache correctness; see the next section.
 
 ## What counts as "the same request"?
 
