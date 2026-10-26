@@ -8,6 +8,9 @@
 
 [English](README.md) · 한국어
 
+<img width="1672" height="941" alt="szq-thumbnail" src="https://github.com/user-attachments/assets/453896d7-729b-47fb-9c14-8694dd37f175" />
+
+
 ---
 
 <div align="center">
