@@ -11,6 +11,7 @@ function diffComponents(prev, cur) {
   if (prev.node !== cur.node) reasons.push(`Node version changed: ${prev.node} -> ${cur.node}`);
   if (prev.platform !== cur.platform) reasons.push(`platform changed: ${prev.platform} -> ${cur.platform}`);
   if (prev.salt !== cur.salt) reasons.push('SZQ_CACHE_SALT changed');
+  if ((prev.gitState || '') !== (cur.gitState || '')) reasons.push('HEAD or a ref used by --changed / --changedSince moved');
   if (JSON.stringify(prev.env) !== JSON.stringify(cur.env)) {
     const names = cur.env.map(([k]) => k).filter((k, i) => JSON.stringify((prev.env[i] || [])[1]) !== JSON.stringify(cur.env[i][1]));
     reasons.push(`environment variable(s) in cache.env changed: ${names.join(', ') || '(list changed)'}`);

@@ -10,6 +10,9 @@ const MAX_FILES = 20000;
 const MAX_HASHED_BYTES = 5 * 1024 * 1024;
 const MAX_SUBMODULE_DEPTH = 2;
 const MAX_FILES_IN_LAST = 5000;
+// Like git's "racily clean" rule: a stat entry is only trusted if the file had been quiet for this long when we
+// hashed it. A same-size rewrite within the timestamp granularity of the file system would otherwise be missed.
+const RACY_MS = 2000;
 
 // git runs in repositories we do not control. We only ever ask it to LIST files (`ls-files`), which neither
 // applies clean/smudge filters nor runs textconv/external-diff helpers; contents are hashed by szq itself.
@@ -76,7 +79,8 @@ class StatStore {
     return e && e[0] === st.size && e[1] === st.mtimeMs && e[2] === st.ctimeMs ? e[3] : null;
   }
 
-  put(rel, st, hash) {
+  put(rel, st, hash, now = Date.now()) {
+    if (now - Math.max(st.mtimeMs, st.ctimeMs) < RACY_MS) return; // too fresh to trust a (size, mtime) match later
     this.map.set(rel, [st.size, st.mtimeMs, st.ctimeMs, hash]);
     this.dirty = true;
   }
@@ -102,7 +106,7 @@ function fileHash(full, rel, store) {
   try {
     if (st.isSymbolicLink()) return `link:${short(fs.readlinkSync(full))}`;
     if (!st.isFile()) return `special:${st.mode & 0o170000}`;
-    if (st.size > MAX_HASHED_BYTES) return `big:${st.size}:${Math.floor(st.mtimeMs)}`;
+    if (st.size > MAX_HASHED_BYTES) return `big:${st.size}:${Math.floor(st.mtimeMs)}:${Math.floor(st.ctimeMs)}:${st.ino}`;
     const cached = store.lookup(rel, st);
     if (cached) return cached;
     const h = short(fs.readFileSync(full));
@@ -111,6 +115,36 @@ function fileHash(full, rel, store) {
   } catch {
     return 'unreadable';
   }
+}
+
+/**
+ * Commands such as `vitest --changed=origin/dev` depend on commits, not only on the files: the same tree gives a
+ * different answer when HEAD or the ref moves. For those, the resolved commit ids join the key.
+ * Returns '' when the command line has no such flag.
+ */
+function refState(top, argv) {
+  const refs = [];
+  let any = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--onlyChanged') any = true;
+    else if (a === '--changed' || a === '--changedSince') {
+      any = true;
+      if (argv[i + 1] && !argv[i + 1].startsWith('-')) refs.push(argv[i + 1]);
+    } else if (/^--changed(Since)?=/.test(a)) {
+      any = true;
+      refs.push(a.slice(a.indexOf('=') + 1));
+    }
+  }
+  if (!any) return '';
+  const safe = refs.filter((r) => /^[\w./@^~{}:+-]{1,200}$/.test(r) && !r.startsWith('-'));
+  const r = cp.spawnSync('git', [...GIT_SAFE, 'rev-parse', '--quiet', 'HEAD', ...safe.map((x) => `${x}^{commit}`)], {
+    cwd: top,
+    env: { ...process.env, ...GIT_ENV },
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return `${(r.stdout || '').trim().replace(/\s+/g, ',')}|unresolved:${refs.length - safe.length}`;
 }
 
 const lp = (s) => `${Buffer.byteLength(s)}:${s}`; // length-prefixed: no field can run into the next
@@ -161,6 +195,7 @@ function hashTree(top, store, prefix, depth) {
  * Files ignored by git are NOT included (see docs/ARCHITECTURE.md) - except those listed in `extraFiles`.
  */
 function fingerprint({ cwd, top, argv, cacheEnv = [], extraFiles = [], env = process.env, statDir }) {
+  const gitState = refState(top, argv);
   const store = new StatStore(path.join(statDir, `${short(top)}.json`));
   const tree = hashTree(top, store, '', 0);
   if (!tree || tree.tooMany) {
@@ -170,7 +205,8 @@ function fingerprint({ cwd, top, argv, cacheEnv = [], extraFiles = [], env = pro
   const extras = {};
   for (const rel of extraFiles) extras[rel] = fileHash(path.join(top, rel), `extra:${rel}`, store);
   store.save();
-  const envPairs = cacheEnv.map((k) => [k, env[k] === undefined ? null : env[k]]);
+  // values are stored only as hashes: the key and the `last` records must not retain secrets
+  const envPairs = cacheEnv.map((k) => [k, env[k] === undefined ? null : short(String(env[k]))]);
   const components = {
     treeHash: tree.hash,
     files: Object.keys(tree.files).length <= MAX_FILES_IN_LAST ? tree.files : null,
@@ -181,8 +217,9 @@ function fingerprint({ cwd, top, argv, cacheEnv = [], extraFiles = [], env = pro
     env: envPairs,
     extras,
     salt: env.SZQ_CACHE_SALT || '',
+    gitState,
   };
-  const key = sha(JSON.stringify([KEY_VERSION, components.treeHash, components.cwdRel, argv, components.node, components.platform, envPairs, extras, components.salt]));
+  const key = sha(JSON.stringify([KEY_VERSION, components.treeHash, components.cwdRel, argv, components.node, components.platform, envPairs, extras, components.salt, gitState]));
   return { key, components };
 }
 
@@ -278,7 +315,8 @@ class Cache {
 
   saveLast(key, components) {
     try {
-      writeJsonAtomic(this.lastFile(components), { v: 1, at: Date.now(), key, components });
+      // the command line is deliberately not persisted (arguments may contain tokens); it only names the file
+      writeJsonAtomic(this.lastFile(components), { v: 1, at: Date.now(), key, components: { ...components, argv: undefined } });
       const names = Math.random() < 1 / 16 ? fs.readdirSync(this.lastDir) : [];
       if (names.length > 300) {
         const old = names

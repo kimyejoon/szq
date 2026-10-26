@@ -10,7 +10,7 @@ const { Cache, fingerprint, gitTop } = require('./cache');
 const { Logs } = require('./logs');
 const { digest } = require('./digest');
 const stats = require('./stats');
-const { killTree, buildInvocation, resolveLocalBin, groupRssKiB, procStart, isWin } = require('./platform');
+const { killTree, buildInvocation, resolveLocalBin, groupRssKiB, procStart, sleepSync, isWin } = require('./platform');
 const { resolveConcurrency, resolveMaxConcurrency, isAutoConcurrency, ensureStateDirs } = require('./config');
 const { CpuMeter } = require('./cpu');
 
@@ -115,15 +115,22 @@ function effectiveCap(cap, adaptive, loadavg = os.loadavg(), cpus = os.cpus().le
 }
 
 /**
- * Concurrency for the next start in 'auto' mode: the base value, plus one more while the machine has CPU headroom.
+ * Concurrency for the next start in 'auto' mode: the base value, plus as many more runs as the CPU headroom
+ * allows. A running run is assumed to use about `util / running` of the machine (an over-estimate when other
+ * programs are busy, which only makes it more careful), so with plenty of headroom several runs are admitted at
+ * once instead of one per settle interval. At most MAX_STEP runs are added per decision.
  * Pure function of its inputs (tested without touching the real CPU).
  */
+const MAX_STEP = 3;
 function growCap({ base, max, running, util, newestStartedAt, now, headroom }) {
   if (running.length < base) return base;
   if (running.length >= max) return base;
   if (util === null || util === undefined) return base; // no measurement yet
   const settled = !newestStartedAt || now - newestStartedAt >= headroom.settleMs;
-  return util < headroom.cpuBelow && settled ? running.length + 1 : base;
+  if (!(util < headroom.cpuBelow) || !settled) return base;
+  const perRun = Math.max(util / Math.max(1, running.length), 0.05);
+  const extra = Math.min(MAX_STEP, Math.max(1, Math.floor((headroom.cpuBelow - util) / perRun)));
+  return Math.min(max, running.length + extra);
 }
 
 /** Wake a waiting run as soon as the queue or the cache directory changes (polling stays as a safety net). */
@@ -270,188 +277,211 @@ async function run({ opts, argv, ctx }) {
     if (code !== undefined) process.exitCode = code;
   };
   const onSignal = (sig) => () => {
+    const pid = child && child.pid;
     cleanup(128 + (sig === 'SIGINT' ? 2 : 15));
+    if (pid) {
+      sleepSync(400); // grace period for SIGTERM, then make sure nothing is left behind outside the queue
+      killTree(pid, 'SIGKILL');
+    }
     process.exit(process.exitCode);
   };
   process.on('SIGINT', onSignal('SIGINT'));
   process.on('SIGTERM', onSignal('SIGTERM'));
   if (!isWin) process.on('SIGHUP', onSignal('SIGTERM'));
 
-  // ---- wait for a slot (or for an identical run ahead of us to finish) ----
-  const waitStart = Date.now();
-  const maxWaitMs = (opts.maxWait || config.maxWaitSec) * 1000;
-  let lastPos = -1;
-  let lastPrint = 0;
-  for (;;) {
-    if (key) {
-      const hit = cache.read(key);
-      if (hit) {
-        cleanup();
-        stats.record(paths.statsFile, { k: 'share', cmd: cmdName, saved: hit.ms || 0, waited: Date.now() - waitStart });
-        return replay(hit, t('cacheHitWaited'), ctx, digestOn);
+  // Everything from here on runs inside try/finally: whatever goes wrong, the ticket, timers, watchers and the
+  // child are released - a leaked 'running' ticket would hold a slot (and keep this process alive) forever.
+  const execute = async () => {
+    // ---- wait for a slot (or for an identical run ahead of us to finish) ----
+    const waitStart = Date.now();
+    const maxWaitMs = (opts.maxWait || config.maxWaitSec) * 1000;
+    let lastPos = -1;
+    let lastPrint = 0;
+    for (;;) {
+      if (key) {
+        const hit = cache.read(key);
+        if (hit) {
+          cleanup();
+          stats.record(paths.statsFile, { k: 'share', cmd: cmdName, saved: hit.ms || 0, waited: Date.now() - waitStart });
+          return replay(hit, t('cacheHitWaited'), ctx, digestOn);
+        }
       }
-    }
-    const eff = effectiveCap(cap, config.adaptive);
-    const r = queue.tryClaim(me, capFn);
-    if (r.ok) break;
-    if (Date.now() - waitStart > maxWaitMs) {
-      cleanup();
-      log(t('waitTimeout', { elapsed: fmtDur(maxWaitMs) }));
-      return 75;
-    }
-    if (r.following) {
-      if (lastPos !== -2 || Date.now() - lastPrint > 30000) {
-        log(t('followLine', { pid: r.leader.pid, where: shortCwd(r.leader.cwd), elapsed: fmtDur(Date.now() - waitStart) }));
-        lastPos = -2;
+      const eff = effectiveCap(cap, config.adaptive);
+      const r = queue.tryClaim(me, capFn);
+      if (r.ok) break;
+      if (Date.now() - waitStart > maxWaitMs) {
+        cleanup();
+        log(t('waitTimeout', { elapsed: fmtDur(maxWaitMs) }));
+        return 75;
+      }
+      if (r.following) {
+        if (lastPos !== -2 || Date.now() - lastPrint > 30000) {
+          log(t('followLine', { pid: r.leader.pid, where: shortCwd(r.leader.cwd), elapsed: fmtDur(Date.now() - waitStart) }));
+          lastPos = -2;
+          lastPrint = Date.now();
+        }
+      } else if (r.position !== lastPos || Date.now() - lastPrint > 30000) {
+        const who = (r.ahead || [])
+          .slice(0, 3)
+          .map((x) => `${shortCwd(x.cwd)}: ${x.cmd.slice(0, 40)}`)
+          .join(' | ');
+        log(
+          t('waitLine', {
+            pos: r.position,
+            running: r.running,
+            cap: r.cap ?? eff.cap,
+            elapsed: fmtDur(Date.now() - waitStart),
+            who: who ? t('waitAhead', { who }) : '',
+          }) + (eff.throttled ? t('throttled', { load: eff.load.toFixed(1) }) : ''),
+        );
+        lastPos = r.position;
         lastPrint = Date.now();
       }
-    } else if (r.position !== lastPos || Date.now() - lastPrint > 30000) {
-      const who = (r.ahead || [])
-        .slice(0, 3)
-        .map((x) => `${shortCwd(x.cwd)}: ${x.cmd.slice(0, 40)}`)
-        .join(' | ');
-      log(
-        t('waitLine', {
-          pos: r.position,
-          running: r.running,
-          cap: r.cap ?? eff.cap,
-          elapsed: fmtDur(Date.now() - waitStart),
-          who: who ? t('waitAhead', { who }) : '',
-        }) + (eff.throttled ? t('throttled', { load: eff.load.toFixed(1) }) : ''),
-      );
-      lastPos = r.position;
-      lastPrint = Date.now();
+      await waker.wait(r.following ? FOLLOW_POLL_MS : POLL_MS);
     }
-    await waker.wait(r.following ? FOLLOW_POLL_MS : POLL_MS);
-  }
-  waker.close();
-  if (Date.now() - waitStart > 2000) log(t('turnCame', { elapsed: fmtDur(Date.now() - waitStart) }));
+    waker.close();
+    if (Date.now() - waitStart > 2000) log(t('turnCame', { elapsed: fmtDur(Date.now() - waitStart) }));
 
-  // The tree may have changed while we waited, and an identical run may have finished meanwhile. After a
-  // (near-)immediate start there is nothing to re-check; the post-run fingerprint still guards the result.
-  if (cacheable && Date.now() - waitStart > RECHECK_AFTER_MS) {
-    fp = fingerprint(fpArgs) || fp;
-    key = fp && fp.key;
-    const hit = key && cache.read(key);
-    if (hit) {
+    // The tree may have changed while we waited, and an identical run may have finished meanwhile. After a
+    // (near-)immediate start there is nothing to re-check; the post-run fingerprint still guards the result.
+    if (cacheable && Date.now() - waitStart > RECHECK_AFTER_MS) {
+      fp = fingerprint(fpArgs) || fp;
+      key = fp && fp.key;
+      const hit = key && cache.read(key);
+      if (hit) {
+        cleanup();
+        const waited = Date.now() - waitStart;
+        stats.record(paths.statsFile, { k: waited > 2000 ? 'share' : 'hit', cmd: cmdName, saved: hit.ms || 0, waited });
+        return replay(hit, waited > 2000 ? t('cacheHitWaited') : t('cacheHit'), ctx, digestOn);
+      }
+      if (fp) cache.saveLast(fp.key, fp.components);
+    }
+
+    // ---- run ----
+    const env = stripShimDirs({ ...process.env, SZQ_ACTIVE: '1' }, paths);
+    const local = resolveLocalBin(finalArgv[0], top ? localBinDirs(cwd, top) : [], env, cwd);
+    const argvToRun = local ? [local, ...finalArgv.slice(1)] : finalArgv;
+    const inv = buildInvocation(argvToRun, env, cwd);
+    if (inv.error) {
       cleanup();
-      const waited = Date.now() - waitStart;
-      stats.record(paths.statsFile, { k: waited > 2000 ? 'share' : 'hit', cmd: cmdName, saved: hit.ms || 0, waited });
-      return replay(hit, waited > 2000 ? t('cacheHitWaited') : t('cacheHit'), ctx, digestOn);
+      log(t('cmdRejected', { chars: inv.error.chars }));
+      return 64;
     }
-    if (fp) cache.saveLast(fp.key, fp.components);
-  }
 
-  // ---- run ----
-  const env = stripShimDirs({ ...process.env, SZQ_ACTIVE: '1' }, paths);
-  const local = resolveLocalBin(finalArgv[0], top ? localBinDirs(cwd, top) : [], env, cwd);
-  const argvToRun = local ? [local, ...finalArgv.slice(1)] : finalArgv;
-  const inv = buildInvocation(argvToRun, env, cwd);
-  if (inv.error) {
-    cleanup();
-    log(t('cmdRejected', { chars: inv.error.chars }));
-    return 64;
-  }
+    logWriter = logs.open({ cwd, cmd: cmdName });
+    const chunks = [];
+    const maxBytes = config.cache.maxEntryMB * 1024 * 1024;
+    let bytes = 0;
+    let overflow = false;
+    let killedBy = null;
+    let lastOutput = Date.now();
+    const started = Date.now();
+    const timeoutMs = (opts.timeout || config.timeoutSec) * 1000;
+    const stallMs = (opts.stall ?? config.stallSec) * 1000;
+    const maxMemKiB = (opts.maxMem ?? config.maxMemMB) * 1024;
+    if (maxMemKiB && isWin) log(t('memUnsupported'));
 
-  logWriter = logs.open({ cwd, cmd: cmdName });
-  const chunks = [];
-  const maxBytes = config.cache.maxEntryMB * 1024 * 1024;
-  let bytes = 0;
-  let overflow = false;
-  let killedBy = null;
-  let lastOutput = Date.now();
-  const started = Date.now();
-  const timeoutMs = (opts.timeout || config.timeoutSec) * 1000;
-  const stallMs = (opts.stall ?? config.stallSec) * 1000;
-  const maxMemKiB = (opts.maxMem ?? config.maxMemMB) * 1024;
-  if (maxMemKiB && isWin) log(t('memUnsupported'));
-
-  const code = await new Promise((resolve) => {
-    const timers = [];
-    const finish = (c) => {
-      timers.forEach(clearInterval);
-      timers.forEach(clearTimeout);
-      resolve(c);
-    };
-    try {
-      child = cp.spawn(inv.file, inv.args, {
-        cwd,
-        env,
-        detached: !isWin,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        ...inv.options,
+    const code = await new Promise((resolve) => {
+      const timers = [];
+      const finish = (c) => {
+        timers.forEach(clearInterval);
+        timers.forEach(clearTimeout);
+        resolve(c);
+      };
+      try {
+        child = cp.spawn(inv.file, inv.args, {
+          cwd,
+          env,
+          detached: !isWin,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          ...inv.options,
+        });
+      } catch (e) {
+        log(t('spawnFailed', { msg: e.message }));
+        return finish(127);
+      }
+      child.on('error', (e) => {
+        log(t('spawnFailed', { msg: e.message }));
+        finish(127);
       });
-    } catch (e) {
-      log(t('spawnFailed', { msg: e.message }));
-      return finish(127);
-    }
-    child.on('error', (e) => {
-      log(t('spawnFailed', { msg: e.message }));
-      finish(127);
+      const stop = (reason, message) => {
+        if (killedBy) return;
+        killedBy = reason;
+        log(message);
+        const pid = child.pid;
+        killTree(pid, 'SIGTERM');
+        const hard = setTimeout(() => killTree(pid, 'SIGKILL'), 5000);
+        hard.unref();
+        timers.push(hard); // cleared as soon as the child has exited, so a recycled pid is never signalled
+      };
+      const tee = (fd, stream) => (buf) => {
+        lastOutput = Date.now();
+        logWriter.write(buf);
+        if (!digestOn) stream.write(buf);
+        bytes += buf.length;
+        if (bytes > maxBytes) overflow = true;
+        else chunks.push([fd, buf.toString('base64')]);
+      };
+      child.stdout.on('data', tee(1, process.stdout));
+      child.stderr.on('data', tee(2, process.stderr));
+      timers.push(setTimeout(() => stop('timeout', t('execTimeout', { elapsed: fmtDur(timeoutMs) })), timeoutMs));
+      if (stallMs > 0) {
+        timers.push(
+          setInterval(() => {
+            if (Date.now() - lastOutput > stallMs) stop('stall', t('stalled', { elapsed: fmtDur(stallMs) }));
+          }, WATCHDOG_MS),
+        );
+      }
+      if (maxMemKiB > 0 && !isWin) {
+        timers.push(
+          setInterval(() => {
+            const rss = groupRssKiB(child.pid);
+            if (rss !== null && rss > maxMemKiB) stop('mem', t('memExceeded', { used: Math.round(rss / 1024), limit: Math.round(maxMemKiB / 1024) }));
+          }, MEM_CHECK_MS),
+        );
+      }
+      queue.update(me, { childPid: child.pid, childStart: procStart(child.pid) });
+      child.on('close', (c, sig) => {
+        const mapped = { timeout: 124, stall: 125, mem: 126 }[killedBy];
+        finish(mapped ?? c ?? (sig ? 128 + (os.constants.signals[sig] || 0) : 1));
+      });
     });
-    const stop = (reason, message) => {
-      if (killedBy) return;
-      killedBy = reason;
-      log(message);
-      killTree(child.pid, 'SIGTERM');
-      setTimeout(() => killTree(child.pid, 'SIGKILL'), 5000).unref();
-    };
-    const tee = (fd, stream) => (buf) => {
-      lastOutput = Date.now();
-      logWriter.write(buf);
-      if (!digestOn) stream.write(buf);
-      bytes += buf.length;
-      if (bytes > maxBytes) overflow = true;
-      else chunks.push([fd, buf.toString('base64')]);
-    };
-    child.stdout.on('data', tee(1, process.stdout));
-    child.stderr.on('data', tee(2, process.stderr));
-    timers.push(setTimeout(() => stop('timeout', t('execTimeout', { elapsed: fmtDur(timeoutMs) })), timeoutMs));
-    if (stallMs > 0) {
-      timers.push(
-        setInterval(() => {
-          if (Date.now() - lastOutput > stallMs) stop('stall', t('stalled', { elapsed: fmtDur(stallMs) }));
-        }, WATCHDOG_MS),
-      );
-    }
-    if (maxMemKiB > 0 && !isWin) {
-      timers.push(
-        setInterval(() => {
-          const rss = groupRssKiB(child.pid);
-          if (rss !== null && rss > maxMemKiB) stop('mem', t('memExceeded', { used: Math.round(rss / 1024), limit: Math.round(maxMemKiB / 1024) }));
-        }, MEM_CHECK_MS),
-      );
-    }
-    queue.update(me, { childPid: child.pid, childStart: procStart(child.pid) });
-    child.on('close', (c, sig) => {
-      const mapped = { timeout: 124, stall: 125, mem: 126 }[killedBy];
-      finish(mapped ?? c ?? (sig ? 128 + (os.constants.signals[sig] || 0) : 1));
-    });
-  });
-  child = null;
-  const ms = Date.now() - started;
-  const logFile = logWriter.file;
-  logWriter.close({ code, ms });
-  logWriter = null;
-  logs.prune();
+    child = null;
+    const ms = Date.now() - started;
+    const logFile = logWriter.file;
+    logWriter.close({ code, ms });
+    logWriter = null;
 
-  // Cache only if nothing changed the working tree while the command ran.
-  let cached = false;
-  if (key && !overflow && !killedBy) {
-    const after = fingerprint(fpArgs);
-    if (after && after.key === key) cached = cache.write(key, { code, cmd: cmdName, chunks, ms, logFile });
-    else log(t('treeChanged'));
-  }
-  stats.record(paths.statsFile, { k: 'run', cmd: cmdName, ms, code, cached });
+    // Cache only if nothing changed the working tree while the command ran.
+    let cached = false;
+    if (key && !overflow && !killedBy) {
+      const after = fingerprint(fpArgs);
+      if (after && after.key === key) cached = cache.write(key, { code, cmd: cmdName, chunks, ms, logFile });
+      else log(t('treeChanged'));
+    }
+    stats.record(paths.statsFile, { k: 'run', cmd: cmdName, ms, code, cached });
 
-  if (digestOn) {
-    const d = digest(logs.readBody(logFile), { ...config.output, logPath: logFile });
-    process.stdout.write(d.text);
+    if (digestOn) {
+      let body;
+      try {
+        body = logs.readBody(logFile);
+      } catch {
+        body = decodeChunks(chunks); // the log vanished (disk full, removed by hand): digest what is still in memory
+      }
+      const d = digest(body, { ...config.output, logPath: logFile });
+      process.stdout.write(d.text);
+    }
+    logs.prune(); // after the digest: a small `logs.keep` must not delete the log this run is about to point at
+    log(t('exited', { code, elapsed: fmtDur(ms) }));
+    cleanup();
+    return code;
+  };
+  try {
+    return await execute();
+  } finally {
+    cleanup();
   }
-  log(t('exited', { code, elapsed: fmtDur(ms) }));
-  cleanup();
-  return code;
 }
 
 function passThrough(argv, cwd, top, paths) {

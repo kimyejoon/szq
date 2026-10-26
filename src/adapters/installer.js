@@ -93,8 +93,29 @@ function backupFile(file) {
   return dest;
 }
 
+function within(child, parent) {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Where the config lives. For project/local scope a symlinked config file may only point INSIDE the project:
+ * a repository could otherwise plant `.claude/settings.json -> ~/somewhere` and have an install (or an uninstall
+ * of an owned file) write to, or delete, a file outside the project.
+ */
 function resolveTarget(adapter, { scope = 'user', home = os.homedir(), cwd = process.cwd() } = {}) {
-  return adapter.target({ scope, home, cwd });
+  const file = adapter.target({ scope, home, cwd });
+  if (scope === 'project' || scope === 'local') {
+    const real = realTarget(file);
+    let root;
+    try {
+      root = fs.realpathSync(cwd);
+    } catch {
+      root = path.resolve(cwd);
+    }
+    if (!within(real, root)) throw new Error(`refusing to use ${file}: it is a symlink that leaves the project (${real})`);
+  }
+  return file;
 }
 
 /**

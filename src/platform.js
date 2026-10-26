@@ -124,11 +124,17 @@ function findOnPath(command, env, cwd, platform = process.platform) {
 
 /**
  * Prefer a project-local executable (node_modules/.bin) for a bare command name.
- * Only the command word is resolved this way - PATH itself is never modified, so `node`, `git` or `make`
- * cannot be shadowed by a binary planted in a repository.
+ * Only the command word is resolved this way - PATH itself is never modified, so tools the command starts
+ * itself cannot be shadowed by a binary planted in a repository - and never for interpreters, shells, git or
+ * package managers (NEVER_LOCAL).
  */
+// Interpreters, shells, git and package managers are never taken from a project directory: a binary committed
+// to a repository under one of these names must not replace the tool the user means.
+const NEVER_LOCAL = new Set(['node', 'git', 'sh', 'bash', 'zsh', 'env', 'npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx', 'python', 'python3', 'ruby']);
+
 function resolveLocalBin(command, binDirs, env, cwd) {
   if (!command || /[\\/]/.test(command) || binDirs.length === 0) return null;
+  if (NEVER_LOCAL.has(String(command).replace(/\.(cmd|exe|ps1|bat)$/i, '').toLowerCase())) return null;
   if (isWin) return findOnPath(command, { ...env, PATH: binDirs.join(';') }, cwd, 'win32');
   for (const dir of binDirs) {
     const candidate = path.join(dir, command);
@@ -170,13 +176,13 @@ function buildInvocation(argv, env, cwd, platform = process.platform) {
   const resolved = findOnPath(command, env, cwd, platform);
   const ext = resolved ? path.win32.extname(resolved).toLowerCase() : '';
   if (resolved && (ext === '.cmd' || ext === '.bat')) {
-    const bad = cmdUnsafeChars([command, ...args]);
+    const bad = cmdUnsafeChars([command, resolved, ...args]);
     if (argv.some((a) => /[\r\n\0]/.test(a))) bad.push('newline');
     if (bad.length) return { error: { code: 'CMD_UNSAFE', chars: bad.join(' ') } };
     const line = [quoteForCmd(resolved), ...args.map(quoteForCmd)].join(' ');
     return {
       file: env.ComSpec || process.env.ComSpec || 'cmd.exe',
-      args: ['/d', '/s', '/c', `"${line}"`],
+      args: ['/d', '/v:off', '/s', '/c', `"${line}"`],
       options: { windowsVerbatimArguments: true },
     };
   }

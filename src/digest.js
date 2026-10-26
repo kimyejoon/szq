@@ -8,7 +8,10 @@
  * never hides that something was cut: it says how many lines were omitted and where the full output is.
  */
 
-const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+// Every pattern is linear-time on the (bounded) text it sees: no `.*` between two anchors, and lines are cut to
+// MAX_LINE_CHARS before matching, so a single 100 MB line cannot make the digest step crawl.
+const MAX_LINE_CHARS = 2000;
 
 const ERROR_PATTERNS = [
   /error TS\d+/, // tsc
@@ -17,17 +20,26 @@ const ERROR_PATTERNS = [
   /\b(AssertionError|TypeError|ReferenceError|SyntaxError|RangeError|Error:|Unhandled|Traceback|panic:|Exception)\b/,
   /\b\d+ (failed|failing)\b/i,
   /\bFound \d+ errors?\b/,
-  /\berror\b.*\b(cannot|can't|not found|undefined|unexpected)\b/i,
 ];
+const ERROR_WORD = /\berror\b/i;
+const ERROR_DETAIL = /\b(cannot|can't|not found|undefined|unexpected)\b/i;
 
 const SUMMARY_PATTERNS = [
   /^\s*(Tests?|Test Files|Test Suites|Snapshots?|Time|Duration)\s*:/i,
   /\bFound \d+ errors?\b/,
   /^\s*\d+ (passing|failing|pending)/,
-  /\b(passed|failed)\b.*\b\d+\b/i,
 ];
+const OUTCOME_WORD = /\b(passed|failed)\b/i;
+const DIGITS = /\b\d+\b/;
 
-const plain = (s) => s.replace(ANSI, '');
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
+
+const plain = (s) => s.slice(0, MAX_LINE_CHARS).replace(ANSI, '');
+
+function interesting(line) {
+  if (ERROR_PATTERNS.some((re) => re.test(line)) || SUMMARY_PATTERNS.some((re) => re.test(line))) return true;
+  return (ERROR_WORD.test(line) && ERROR_DETAIL.test(line)) || (OUTCOME_WORD.test(line) && DIGITS.test(line));
+}
 
 /**
  * @param {string} text full output
@@ -53,7 +65,7 @@ function digest(text, opts = {}) {
   let errors = 0;
   for (let i = head; i < total - tail && errors < maxErrorLines; i++) {
     const l = plain(lines[i]);
-    if (ERROR_PATTERNS.some((re) => re.test(l)) || SUMMARY_PATTERNS.some((re) => re.test(l))) {
+    if (interesting(l)) {
       errors++;
       keep[i] = true;
       // indented continuation lines belong to the error above them (tsc, stack traces)

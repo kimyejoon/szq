@@ -4,6 +4,7 @@
  * heavy command at the same moment?
  *
  *   node bench/run.js [--agents 8] [--cpu-ms 2000] [--tsc path/to/tsc.js] [--out bench/RESULTS.md]
+ *                     [--only ABCDE] [--szq-config '{"headroom":{"cpuBelow":0.8}}']
  *
  * Scenarios
  *   A  N agents run the SAME command on the SAME code      (baseline: all start at once)
@@ -31,6 +32,9 @@ const AGENTS = Number(arg('--agents', 8));
 const TARGET_CPU_MS = Number(arg('--cpu-ms', 2000));
 const TSC = arg('--tsc', null);
 const OUT = arg('--out', path.join(__dirname, 'RESULTS.md'));
+const ONLY = arg('--only', 'ABCDE').toUpperCase();
+const SZQ_CONFIG = arg('--szq-config', null); // JSON merged into the config used by the szq runs
+const want = (letter) => ONLY.includes(letter);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const git = (cwd, ...a) =>
@@ -148,7 +152,11 @@ async function calibrate() {
 
 function freshEnv() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'szq-bench-home-'));
-  return { home, env: { ...process.env, SZQ_HOME: home, SZQ_CONFIG: path.join(home, 'none.json'), SZQ_LANG: 'en' } };
+  const configFile = path.join(home, 'config.json');
+  if (SZQ_CONFIG) fs.writeFileSync(configFile, SZQ_CONFIG);
+  const env = { ...process.env, SZQ_HOME: home, SZQ_CONFIG: configFile, SZQ_LANG: 'en' };
+  delete env.CLAUDECODE;
+  return { home, env };
 }
 
 function summarise(label, run, markers, results) {
@@ -193,7 +201,7 @@ async function main() {
   const burnArgs = (marker, id) => [BURN, String(iters), marker, id];
 
   // ---- A: same command ----
-  report.scenarios.push(
+  if (want('A')) report.scenarios.push(
     await scenario('A. same command, same code, all agents at once', async (useSzq) => {
       const { home, env } = freshEnv();
       const marker = path.join(home, 'm.jsonl');
@@ -208,7 +216,7 @@ async function main() {
   );
 
   // ---- B: different commands ----
-  report.scenarios.push(
+  if (want('B')) report.scenarios.push(
     await scenario('B. different commands, all agents at once', async (useSzq) => {
       const { home, env } = freshEnv();
       const marker = path.join(home, 'm.jsonl');
@@ -223,7 +231,7 @@ async function main() {
   );
 
   // ---- C: repeated run, unchanged code ----
-  {
+  if (want('C')) {
     const { home, env } = freshEnv();
     const marker = path.join(home, 'm.jsonl');
     const times = [];
@@ -236,7 +244,7 @@ async function main() {
   }
 
   // ---- D: real tsc (optional) ----
-  if (TSC && fs.existsSync(TSC)) {
+  if (want('D') && TSC && fs.existsSync(TSC)) {
     const proj = mkRepo();
     cp.spawnSync(process.execPath, [path.join(__dirname, 'gen-ts-project.js'), proj, '400'], { stdio: 'ignore' });
     git(proj, 'add', '-A');
@@ -257,7 +265,7 @@ async function main() {
   }
 
   // ---- E: output volume (what an agent has to read) ----
-  {
+  if (want('E')) {
     const { env } = freshEnv();
     const noisy = `for(let i=0;i<2000;i++)console.log('  ok test '+i);console.log('src/a.ts(1,1): error TS2322: Type string is not assignable to type number.');console.log('Found 1 error.');for(let i=0;i<500;i++)console.log('  ok more '+i)`;
     const sizeOf = async (extra) => {
@@ -279,6 +287,7 @@ function toMarkdown(r) {
   let md = `# Benchmark results\n\n`;
   md += `- Date: ${r.date}\n- Machine: ${r.machine}\n- Node: ${r.node}\n`;
   md += `- ${r.agents} simultaneous "agents"; each job is ~${r.cpuMsPerJob} ms of single-core CPU work when run alone\n`;
+  if (SZQ_CONFIG) md += `- szq config for this run: \`${SZQ_CONFIG}\`\n`;
   md += `- szq concurrency: ${r.szqConcurrency} (cpus/4); background CPU use before the run: ${r.backgroundCpuPct}%; load average at start: ${r.loadavgAtStart.join(' ')}\n\n`;
   md += `> Numbers describe this machine at this moment. Other processes (background load above) add noise; re-run \`npm run bench\` on your own hardware.\n\n`;
   for (const s of r.scenarios) {
@@ -293,7 +302,7 @@ function toMarkdown(r) {
     md += `## E. output volume (what an agent has to read)\n\nA command that prints ${o.full.lines} lines, one of them an error:\n\n| | lines | bytes | ~tokens (bytes/4) | kept the error line |\n|---|---|---|---|---|\n`;
     md += `| plain output | ${o.full.lines} | ${o.full.bytes} | ${o.approxTokens.full} | ${o.full.keptError} |\n| \`--digest\` | ${o.digest.lines} | ${o.digest.bytes} | ${o.approxTokens.digest} | ${o.digest.keptError} |\n\n${o.reductionPct}% less text.\n\n`;
   }
-  md += `## C. one agent repeating the same command, code unchanged\n\nSeconds per call: ${r.repeat.secondsPerCall.join(', ')} - the command actually ran ${r.repeat.executions} time(s).\n`;
+  if (r.repeat) md += `## C. one agent repeating the same command, code unchanged\n\nSeconds per call: ${r.repeat.secondsPerCall.join(', ')} - the command actually ran ${r.repeat.executions} time(s).\n`;
   return md;
 }
 

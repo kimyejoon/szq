@@ -10,6 +10,9 @@ const { validPid, pidAlive, killTree, sleepSync, procStart, sameProcess } = requ
 const STALE_VERIFIED_MS = 30 * 60 * 1000;
 const STALE_UNVERIFIED_MS = 5 * 60 * 1000;
 const CLAIM_STALE_MS = 10000;
+// A heartbeat younger than this (owners touch their ticket every 5 s) proves liveness together with a live pid, so
+// the expensive start-time check (a `ps` process) is only needed for tickets that went quiet.
+const FRESH_MS = 15000;
 
 const PRIORITY = { high: 2, normal: 1, low: 0 };
 
@@ -61,13 +64,15 @@ class Queue {
   }
 
   isDead(t) {
-    if (t.host && t.host !== this.host) return Date.now() - t.mtimeMs > STALE_UNVERIFIED_MS; // other machine (shared home)
+    const age = Date.now() - t.mtimeMs;
+    if (t.host && t.host !== this.host) return age > STALE_UNVERIFIED_MS; // other machine (shared home)
     if (!pidAlive(t.pid)) return true;
+    if (age < FRESH_MS) return false; // live pid + fresh heartbeat: no need to ask `ps`
     if (t.ownerStart) {
       if (!sameProcess(t.pid, t.ownerStart)) return true; // pid reused by someone else
-      return Date.now() - t.mtimeMs > STALE_VERIFIED_MS;
+      return age > STALE_VERIFIED_MS;
     }
-    return Date.now() - t.mtimeMs > STALE_UNVERIFIED_MS;
+    return age > STALE_UNVERIFIED_MS;
   }
 
   /** Remove tickets of dead owners and stop the children they orphaned. Returns the live tickets. */
@@ -96,9 +101,16 @@ class Queue {
 
   withClaim(fn) {
     const start = Date.now();
+    const token = crypto.randomBytes(8).toString('hex');
+    const ownerFile = path.join(this.claimDir, 'owner');
     for (;;) {
       try {
         fs.mkdirSync(this.claimDir, { mode: 0o700 });
+        try {
+          fs.writeFileSync(ownerFile, token);
+        } catch {
+          /* a breaker renamed the directory right away; fn will still run, release below checks the token */
+        }
         break;
       } catch (e) {
         if (e.code !== 'EEXIST') throw e;
@@ -119,10 +131,14 @@ class Queue {
     try {
       return fn();
     } finally {
+      // release only a mutex that is still ours: if it was judged stale and re-taken by someone else, leave it
       try {
-        fs.rmdirSync(this.claimDir);
+        if (fs.readFileSync(ownerFile, 'utf8') === token) {
+          fs.unlinkSync(ownerFile);
+          fs.rmdirSync(this.claimDir);
+        }
       } catch {
-        /* already removed */
+        /* already removed or taken over */
       }
     }
   }
