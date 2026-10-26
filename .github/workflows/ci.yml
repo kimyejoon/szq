@@ -28,4 +28,4 @@ jobs:
           node --version
           git --version
       - name: Test
-        run: node --test --test-timeout=120000
+        run: node --test
