@@ -1,6 +1,7 @@
 # szq
 
 **AI 코딩 에이전트가 계속 돌리는 무거운 명령(tsc·vitest·jest)을 위한 공용 큐, git 상태 기반 결과 캐시, 그리고 가드 훅.**
+**여러 터미널을 띄워두고 개발하는 당신을 위한. 최대 50배 더 빠른 병렬 코딩 에이전트를 위해.**
 
 [![CI](https://github.com/kimyejoon/szq/actions/workflows/ci.yml/badge.svg)](https://github.com/kimyejoon/szq/actions/workflows/ci.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
