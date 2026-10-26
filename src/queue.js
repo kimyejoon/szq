@@ -144,13 +144,14 @@ class Queue {
   }
 
   create(cwd, argv, key, { priority = 'normal', exclusive = false } = {}) {
+    const ownerStart = procStart(process.pid); // slow (spawns `ps`): do it BEFORE the id is drawn
     const id = `${String(Date.now()).padStart(13, '0')}-${process.pid}-${crypto.randomBytes(2).toString('hex')}`;
     const file = path.join(this.dir, `${id}.json`);
     const t = {
       id,
       pid: process.pid,
       host: this.host,
-      ownerStart: procStart(process.pid),
+      ownerStart,
       cwd,
       cmd: argv.join(' ').slice(0, 300),
       key: key || null,
@@ -190,11 +191,18 @@ class Queue {
   }
 
   /**
-   * Of all live tickets with the same request key, the oldest is the leader.
-   * Everyone else follows: no slot is consumed, the leader's result is shared.
+   * Who does `t` follow, if anyone? Among live tickets with the same request key:
+   *  1. one that is already RUNNING wins, whatever the arrival order. A ticket file can become visible later than
+   *     its id suggests (the id is drawn first, the file written a few milliseconds - under load tens of
+   *     milliseconds - after), so a "younger" ticket may legitimately start first; the "older" one must then
+   *     follow it instead of starting a duplicate;
+   *  2. otherwise the oldest waiting one leads and the rest follow.
+   * A follower takes no slot and replays the leader's result.
    */
   static leaderOf(t, live) {
-    return t.key ? live.find((o) => o.key === t.key && o.id < t.id) || null : null;
+    if (!t.key || t.state === 'running') return null; // a run that has started follows nobody
+    const same = live.filter((o) => o.key === t.key && o.id !== t.id);
+    return same.find((o) => o.state === 'running') || same.find((o) => o.id < t.id) || null;
   }
 
   /**

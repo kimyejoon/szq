@@ -364,3 +364,38 @@ test('config: state directory permission problems are reported, not ignored', { 
   assert.match(r.stderr, /unsafe state directory/);
   assert.ok(config);
 });
+
+// ---------- leader election must not depend on arrival order ----------
+
+test('leaderOf: an already running ticket wins over arrival order, otherwise the oldest waiting one leads', () => {
+  const { Queue } = require('../src/queue');
+  const mk = (id, state, key = 'K') => ({ id, state, key });
+  const older = mk('0001', 'waiting');
+  const younger = mk('0002', 'running');
+  assert.equal(Queue.leaderOf(older, [older, younger]), younger, 'the older ticket follows a younger one that already runs');
+  assert.equal(Queue.leaderOf(younger, [older, younger]), null, 'a run that has started follows nobody');
+});
+
+test('leaderOf: waiting tickets follow the oldest; different keys and null keys never follow', () => {
+  const { Queue } = require('../src/queue');
+  const a = { id: '1', state: 'waiting', key: 'K' };
+  const b = { id: '2', state: 'waiting', key: 'K' };
+  const c = { id: '3', state: 'waiting', key: 'OTHER' };
+  const d = { id: '4', state: 'waiting', key: null };
+  assert.equal(Queue.leaderOf(a, [a, b, c, d]), null);
+  assert.equal(Queue.leaderOf(b, [a, b, c, d]), a);
+  assert.equal(Queue.leaderOf(c, [a, b, c, d]), null);
+  assert.equal(Queue.leaderOf(d, [a, b, c, d]), null);
+});
+
+test('identical requests that arrive in a scrambled order still execute exactly once (stress)', async () => {
+  const { env, home } = mkEnv();
+  const repo = mkRepo();
+  for (let round = 0; round < 5; round++) {
+    const f = path.join(home, `runs-${round}.txt`);
+    const runs = Array.from({ length: 8 }, () => szqStart(['--cap', '4', '--', ...job(f, 'same', 1200)], { cwd: repo, env: { ...env, SZQ_CACHE_SALT: `round-${round}` } }));
+    const res = await Promise.all(runs.map((r) => r.done));
+    for (const r of res) assert.equal(r.code, 0, r.stderr);
+    assert.equal(lines(f).length, 1, `round ${round}: the command must run exactly once`);
+  }
+});

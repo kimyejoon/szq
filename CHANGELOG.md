@@ -30,6 +30,11 @@ First public version.
   CI on `windows-latest`.
 - English and Korean CLI messages and documentation; benchmarks (`npm run bench`).
 
+### Fixed
+- Under heavy load identical concurrent requests could occasionally execute twice: leader election trusted the ticket
+  id order, but a ticket file can become visible later than its id suggests. A running ticket with the same key now wins
+  whatever the arrival order. Regression and stress tests added.
+
 ### Performance
 - A cache hit takes ~0.07 s instead of ~0.13 s: the repository root is found without starting git, one `git ls-files`
   replaces two, the post-wait fingerprint is skipped after an immediate start, housekeeping is occasional, modules load

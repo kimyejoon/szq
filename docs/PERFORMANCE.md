@@ -61,6 +61,9 @@ get exactly that many. If you prefer speed over politeness, raise `concurrency` 
   Afterwards only changed files are re-read.
 - A cache hit still needs one `git ls-files` (about 20-45 ms); that is the floor without walking the tree and
   re-implementing `.gitignore` ourselves.
-- One run in an earlier measurement executed `tsc` twice instead of once (a process failed to start `git` under heavy
-  load, so it ran without a fingerprint). `git` invocations are now retried once; we could not reproduce it afterwards
-  in three more runs.
+- One measurement showed `tsc` executing twice instead of once for eight identical requests. Cause (found by logging
+  the claim decisions under load): a ticket's id was drawn before its file was written, and under load that gap grew to
+  tens of milliseconds, so a "younger" ticket could start before the "older" one even became visible - and the older one,
+  seeing nobody ahead of it, started a duplicate. Fixed: an already running ticket with the same key now wins whatever
+  the arrival order, and the id is drawn right before the write. A stress test (8 identical requests x 5 rounds) and
+  50 loaded repetitions show no duplicate afterwards (before the fix: 1-3 duplicates per 10 rounds under the same load).

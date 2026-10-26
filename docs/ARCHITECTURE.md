@@ -106,10 +106,12 @@ records `pid`, `host`, the owner's start time, `cwd`, the command line, the requ
 
 ## Identical requests ("followers")
 
-Among live tickets with the same key the **oldest is the leader**; the rest *follow*: they take no slot, print "an
-identical run is ahead", and replay the leader's result when it appears in the cache. If the leader disappears without
-a cacheable result (killed, timed out, stalled, tree changed, output too large) the next follower becomes leader and
-runs the command.
+Among live tickets with the same key one is the **leader**: a ticket that is *already running* wins whatever the
+arrival order (a ticket file can become visible later than its id suggests - the id is drawn before the file is written
+- so a "younger" ticket may start first, and the "older" one must then follow it instead of starting a duplicate);
+otherwise the oldest waiting ticket leads. The rest *follow*: they take no slot, print "an identical run is ahead", and
+replay the leader's result when it appears in the cache. If the leader disappears without a cacheable result (killed,
+timed out, stalled, tree changed, output too large) the next follower becomes leader and runs the command.
 
 ## Cache entries
 
