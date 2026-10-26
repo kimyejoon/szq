@@ -1,0 +1,101 @@
+{
+  "date": "2026-10-26T06:06:14.001Z",
+  "machine": "Apple M1 Pro x8, 16 GiB, darwin 25.0.0",
+  "node": "v22.23.1",
+  "agents": 8,
+  "cpuMsPerJob": 2000,
+  "backgroundCpuPct": 100,
+  "loadavgAtStart": [
+    71.8,
+    69.1,
+    43.5
+  ],
+  "szqConcurrency": 2,
+  "scenarios": [
+    {
+      "name": "A. same command, same code, all agents at once",
+      "rows": [
+        {
+          "label": "without szq",
+          "wallS": 9.29,
+          "executions": 8,
+          "maxParallel": 8,
+          "cpuSecondsOfWork": 16.6,
+          "avgCpuPct": 100,
+          "peakCpuPct": 100,
+          "failures": 0
+        },
+        {
+          "label": "with szq",
+          "wallS": 5.67,
+          "executions": 1,
+          "maxParallel": 1,
+          "cpuSecondsOfWork": 2,
+          "avgCpuPct": 94,
+          "peakCpuPct": 100,
+          "failures": 0
+        }
+      ]
+    },
+    {
+      "name": "B. different commands, all agents at once",
+      "rows": [
+        {
+          "label": "without szq",
+          "wallS": 7.26,
+          "executions": 8,
+          "maxParallel": 8,
+          "cpuSecondsOfWork": 16.9,
+          "avgCpuPct": 100,
+          "peakCpuPct": 100,
+          "failures": 0
+        },
+        {
+          "label": "with szq",
+          "wallS": 12.82,
+          "executions": 8,
+          "maxParallel": 2,
+          "cpuSecondsOfWork": 15.3,
+          "avgCpuPct": 93,
+          "peakCpuPct": 100,
+          "failures": 0
+        }
+      ]
+    },
+    {
+      "name": "D. real `tsc --noEmit` (generated project), same code, all agents at once",
+      "rows": [
+        {
+          "label": "without szq",
+          "wallS": 18.72,
+          "executions": 0,
+          "maxParallel": null,
+          "cpuSecondsOfWork": null,
+          "avgCpuPct": 100,
+          "peakCpuPct": 100,
+          "failures": 0
+        },
+        {
+          "label": "with szq",
+          "wallS": 5.57,
+          "executions": 1,
+          "maxParallel": null,
+          "cpuSecondsOfWork": null,
+          "avgCpuPct": 94,
+          "peakCpuPct": 100,
+          "failures": 0
+        }
+      ]
+    }
+  ],
+  "repeat": {
+    "secondsPerCall": [
+      2.56,
+      0.13,
+      0.15,
+      0.14,
+      0.11
+    ],
+    "executions": 1
+  }
+}

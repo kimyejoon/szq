@@ -1,0 +1,50 @@
+{
+  "name": "szq",
+  "version": "0.1.0",
+  "description": "A machine-wide queue, git-state result cache and guard hooks for heavy verification commands (tsc, vitest, jest) run by parallel AI coding agents.",
+  "keywords": [
+    "queue",
+    "ai-agents",
+    "claude-code",
+    "codex",
+    "cursor",
+    "gemini-cli",
+    "hooks",
+    "tsc",
+    "vitest",
+    "jest",
+    "cache",
+    "concurrency"
+  ],
+  "license": "MIT",
+  "author": "Kim Yejoon <https://github.com/kimyejoon>",
+  "homepage": "https://github.com/kimyejoon/szq#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kimyejoon/szq.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kimyejoon/szq/issues"
+  },
+  "bin": {
+    "szq": "bin/szq.js"
+  },
+  "main": "src/index.js",
+  "files": [
+    "bin",
+    "src",
+    "docs",
+    "README.md",
+    "README.ko.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test",
+    "bench": "node bench/run.js"
+  }
+}

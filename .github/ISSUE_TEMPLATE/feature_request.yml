@@ -1,0 +1,19 @@
+name: Feature request / new agent adapter
+description: Suggest an improvement or ask for support for another agent
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What problem are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: agent
+    attributes:
+      label: For a new agent adapter - link to the agent's hook documentation
+      description: The hook event that runs before a shell command, its stdin JSON, and how to deny.
+  - type: textarea
+    id: idea
+    attributes:
+      label: Proposed solution
