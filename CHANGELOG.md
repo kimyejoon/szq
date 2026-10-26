@@ -30,8 +30,25 @@ First public version.
   CI on `windows-latest`.
 - English and Korean CLI messages and documentation; benchmarks (`npm run bench`).
 
+### Performance
+- A cache hit takes ~0.07 s instead of ~0.13 s: the repository root is found without starting git, one `git ls-files`
+  replaces two, the post-wait fingerprint is skipped after an immediate start, housekeeping is occasional, modules load
+  lazily. Waiters are woken by file-system events instead of a 1 s poll. Idle-aware concurrency admits more runs while
+  the CPU has headroom. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
 ### Security
-An independent adversarial review before the first release found the following, all fixed with regression tests:
+Two independent adversarial reviews before the first release. **Second review** (ten findings, all fixed with
+regression tests): a failure after the slot was taken left a ticket (and the process) alive forever - everything after
+the claim now runs under `try/finally`, logs of running runs are never pruned and a vanished log falls back to the
+in-memory output; a quadratic-time regex in the digest (a 240 KB line took 43 s) replaced by linear checks on bounded
+lines; the cache key ignored HEAD/refs for `--changed`/`--changedSince`; `ps` was started once per ticket per queue
+decision (now only for quiet tickets) and the claim mutex carries an owner token; the SIGKILL follow-up could read a
+nulled child; the digest lost the real tail of output beyond the 64 MiB log cap; `node`/`git`/package managers could be
+shadowed from `node_modules/.bin`; `--project` installs followed symlinks out of the project; the stat cache trusted
+entries younger than the timestamp granularity (racily clean) and big files lacked ctime/inode; "last run" records kept
+the command line and environment values; `cmd.exe` is now started with `/v:off` and `%` in resolved paths is rejected.
+
+**First review** - found the following, all fixed with regression tests:
 
 - **Medium** - a relative `--adapter-module` was resolved against the agent's working directory, so a repository could
   have its own code executed by the hook. Paths are now pinned to an absolute, symlink-free path at install time and

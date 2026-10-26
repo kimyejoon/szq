@@ -4,6 +4,7 @@ const path = require('path');
 const cp = require('child_process');
 const crypto = require('crypto');
 const { writeJsonAtomic } = require('./queue');
+const { sleepSync } = require('./platform');
 
 const KEY_VERSION = 'szq-key-2';
 const MAX_FILES = 20000;
@@ -20,14 +21,21 @@ const GIT_SAFE = ['-c', 'core.fsmonitor=false', '-c', 'core.pager=cat'];
 const GIT_ENV = { GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_PAGER: 'cat' };
 
 function gitText(args, cwd) {
-  const r = cp.spawnSync('git', [...GIT_SAFE, ...args], {
-    cwd,
-    env: { ...process.env, ...GIT_ENV },
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-    windowsHide: true,
-  });
-  return r.status === 0 ? r.stdout : null;
+  // One retry when git could not even be started or was killed (EAGAIN/ENOMEM on a saturated machine): without
+  // a fingerprint a run cannot be shared or cached, so a transient spawn failure is worth another try.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = cp.spawnSync('git', [...GIT_SAFE, ...args], {
+      cwd,
+      env: { ...process.env, ...GIT_ENV },
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      windowsHide: true,
+    });
+    if (r.status === 0) return r.stdout;
+    if (!r.error && r.status !== null) return null; // git ran and said no (not a repository, ...)
+    sleepSync(60);
+  }
+  return null;
 }
 
 /**

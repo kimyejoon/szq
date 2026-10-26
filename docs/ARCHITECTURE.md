@@ -42,8 +42,8 @@ name or content can be crafted to run into the next entry.
 
 `treeHash` covers
 
-1. every **tracked** file (`git ls-files -s -z`) as it is on disk - modified, deleted (`gone`) and unmodified alike,
-2. every **untracked, non-ignored** file (`git ls-files -o --exclude-standard -z`),
+1. every **tracked** file (`git ls-files -t -s -o --exclude-standard -z`, one process; `-t` tags each line) as it is on disk - modified, deleted (`gone`) and unmodified alike,
+2. every **untracked, non-ignored** file (same listing, lines tagged `?`),
 3. initialised **submodules**, recursively (depth 2),
 4. at most 20,000 files; beyond that the directory is not cached.
 
@@ -51,7 +51,14 @@ Files are hashed by szq itself: regular files by content (`sha256`), symlinks by
 opened, files over 5 MiB by `size + mtime`. szq asks git only to *list* files. It never asks git to compare or diff
 content, because comparing runs a repository's clean/smudge filters and diff helpers (`filter.*.clean`,
 `diff.*.textconv`) - code a hostile repository could define. A `(size, mtime, ctime) -> hash` cache keeps repeated
-fingerprints fast on large trees.
+fingerprints fast on large trees; an entry is only stored for a file that had been quiet for 2 s ("racily clean", as in
+git), so a same-size rewrite within the file system's timestamp granularity cannot be mistaken for an unchanged file.
+Files over 5 MiB are identified by `size + mtime + ctime + inode`. The repository root is found by walking up to the
+nearest `.git` (no process); git is asked only when `GIT_DIR`/`GIT_WORK_TREE` are set.
+
+For commands whose result depends on commits (`--changed[=REF]`, `--changedSince=REF`, `--onlyChanged`) the resolved
+ids of `HEAD` and the ref join the key. Environment values are stored only as hashes and the "last run" records never
+contain the command line.
 
 Also in the key: the working directory relative to the repository root, the full argument vector, the Node version and
 platform, the values of the variables listed in `cache.env`, the content of `cache.extraFiles`, `SZQ_CACHE_SALT`.
@@ -72,23 +79,30 @@ A *ticket* is a JSON file named `<13-digit ms timestamp>-<pid>-<random>.json`, s
 records `pid`, `host`, the owner's start time, `cwd`, the command line, the request `key`, `prio`, `exclusive` and
 `state` (`waiting` | `running`), later `childPid` and `childStart`.
 
-- **Liveness.** A ticket is dead when its owner's pid is gone, or the pid now belongs to a different process (start time
-  mismatch), or - last resort - its heartbeat (touched every 5 s) is older than 30 min (5 min where start times are
-  unavailable). A laptop that sleeps does not lose its tickets. Tickets from another host (shared home directory) are
+- **Liveness.** A ticket is dead when its owner's pid is gone. A live pid with a fresh heartbeat (< 15 s; owners touch
+  their ticket every 5 s) is trusted without further checks; for a quiet ticket the owner's recorded start time must
+  still match the live process (a `ps` call, so it is avoided on the hot path), and it is dead after 30 min of silence
+  (5 min where start times are unavailable). A laptop that sleeps does not lose its tickets. Tickets from another host (shared home directory) are
   treated as unverifiable.
 - **Reaping and orphans.** Dead tickets are removed on every claim attempt. If the owner died but its child is still
   running, the child's **process group** is terminated - but only when the host matches **and** the child's recorded
   start time still matches the live process, re-checked before the follow-up SIGKILL. Pid 0/1/negative/non-integer
   values are never signalled, and szq never falls back to signalling a bare pid. On Windows orphans are not killed.
-- **Mutex.** `mkdir claim.lock` is atomic. A stale mutex (> 10 s) is broken by renaming it away - exactly one waiter wins.
+- **Mutex.** `mkdir claim.lock` is atomic and holds an owner token; a holder releases only a mutex that still carries its
+  token. A stale mutex (> 10 s) is broken by renaming it away - exactly one waiter wins.
 - **Admission** (`src/queue.js: admit`): waiting tickets are ordered by priority (`high` for a human at a terminal,
   `normal` for everything else, or `--priority`) and then arrival. A ticket starts if `running < cap` and it is among
   the admitted ones. An `--exclusive` ticket needs an empty machine and blocks everyone behind it; nobody starts while an
   exclusive run is active.
-- **Effective cap.** `cap` is `--cap`, `$SZQ_CONCURRENCY`, `concurrency` or CPUs/4. While the 1-minute load average
-  exceeds `adaptive.loadPerCpu` x CPUs the cap for new starts is 1 (never 0, so a busy machine cannot starve the queue).
-- **Waiting.** Polls once per second (followers every 250 ms), re-checking the cache each time, printing the queue
-  position when it changes or every 30 s.
+- **Effective cap.** The base is `--cap`, `$SZQ_CONCURRENCY`, `concurrency` or CPUs/4. Only when it is *derived*
+  (`auto`, no `--cap`) the cap can grow: once the base number of runs is running, one or more further runs are admitted
+  while recent whole-machine CPU utilisation is below `headroom.cpuBelow` and the newest run started at least
+  `headroom.settleMs` ago (so its load is visible); each running run is assumed to use `utilisation / running` of the
+  machine, at most +3 per decision, never above `maxConcurrency`. While the 1-minute load average exceeds
+  `adaptive.loadPerCpu` x CPUs the cap for new starts is 1 (never 0, so a busy machine cannot starve the queue). The
+  cap is evaluated inside the queue lock, on a consistent list of running tickets.
+- **Waiting.** A waiter sleeps until a file-system event in the queue or cache directory (`fs.watch`) or at most 500 ms
+  (followers 250 ms), re-checking the cache each time, printing the queue position when it changes or every 30 s.
 
 ## Identical requests ("followers")
 
@@ -116,11 +130,16 @@ Exit code 0 is kept for `cache.successTtlHours` (24), exit codes 1-123 for `cach
   rejected there because `cmd.exe` would re-interpret them.
 - A bare command name is looked up in the project's `node_modules/.bin` directories (cwd up to the repository root)
   first - `szq tsc` finds the project's compiler. **Only the command word is resolved this way; `PATH` is not modified**,
-  so `node`, `git` or `make` cannot be shadowed by a binary planted in a repository.
+  so tools the command starts itself cannot be shadowed by a binary planted in a repository, and interpreters, shells,
+  `git` and package managers (`node`, `bash`, `git`, `npm`, `pnpm`, `yarn`, `bun`, `python`, ...) are never taken from a
+  project directory at all.
 - The child gets `SZQ_ACTIVE=1`; a nested `szq` call inside a running job then runs its command directly instead of
   queueing behind itself.
 - stdin is closed; stdout/stderr are piped, teed to the terminal (unless digesting), written to the log file (up to
-  64 MiB) and buffered for the cache. Real watch modes are refused (`--watch`, `vitest -w`, `tsc -w`; `jest -w` is
+  64 MiB, plus the last 1 MiB of anything beyond that, so a digest still ends with the real summary) and buffered for
+  the cache. A log is written as `<name>.log.part` while its run is in progress and renamed when it ends, so pruning can
+  never remove the log of a running run. Everything after the slot was taken runs under `try/finally`: whatever fails,
+  the ticket, timers and child are released. Real watch modes are refused (`--watch`, `vitest -w`, `tsc -w`; `jest -w` is
   `--maxWorkers` and is allowed).
 - Supervision: `--timeout` (default 900 s), `--stall` (no output), `--max-mem` (POSIX: resident memory of the process
   group, sampled with `ps`). Each kills the process group / tree (SIGTERM, then SIGKILL after 5 s) and sets exit code
@@ -131,6 +150,7 @@ Exit code 0 is kept for `cache.successTtlHours` (24), exit codes 1-123 for `cach
 When digesting, output is not streamed: the log file is read after the run and reduced by `src/digest.js` - the first
 `head` lines, the last `tail` lines, and every line matching error patterns in between (`error TS####`, `FAIL`,
 `AssertionError`, summary lines such as `Tests: 1 failed`, ...) with up to three indented continuation lines, capped.
+Every pattern is linear-time and only the first 2,000 characters of a line are examined.
 It says how many lines were omitted and where the full log is. Short outputs pass through unchanged. Digest mode merges
 stdout and stderr into one stream (arrival order).
 

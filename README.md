@@ -16,8 +16,8 @@ most of that CPU time is duplicated work, and every run dumps thousands of lines
 
 `szq` fixes this at the command level:
 
-1. **One queue per machine.** Heavy commands run through a FIFO queue with a concurrency cap
-   (default: CPUs / 4) that backs off further when the machine is already busy for other reasons.
+1. **One queue per machine.** Heavy commands run through a FIFO queue. It starts with CPUs / 4 parallel runs, admits
+   more while the CPU has headroom, and drops to one when the machine is busy for other reasons.
    Waiting agents see their position; a human typing in a terminal goes first.
 2. **Identical runs run once.** Requests are fingerprinted by *command + the content of your git working tree*.
    If N agents ask for the same thing, one runs it and the others receive the same output and exit code.
@@ -150,6 +150,8 @@ anything goes wrong it allows the command.
 ```json
 {
   "concurrency": "auto",
+  "maxConcurrency": "auto",
+  "headroom": { "enabled": true, "cpuBelow": 0.55, "settleMs": 800 },
   "timeoutSec": 900,
   "maxWaitSec": 1800,
   "stallSec": 0,
@@ -164,7 +166,9 @@ anything goes wrong it allows the command.
 }
 ```
 
-`guard.commands` / `guard.scripts` decide what the hook blocks (add `pytest`, `eslint`, `check`...). `adaptive` lowers
+`concurrency: "auto"` starts with CPUs / 4 and admits more runs (up to `maxConcurrency`, default 75% of the CPUs) while
+recent CPU utilisation is below `headroom.cpuBelow`; a number pins it. `guard.commands` / `guard.scripts` decide what
+the hook blocks (add `pytest`, `eslint`, `check`...). `adaptive` lowers
 the effective concurrency to 1 while the 1-minute load average exceeds `loadPerCpu` x CPUs (not available on
 Windows). Environment: `SZQ_CONCURRENCY`, `SZQ_HOME` (state directory), `SZQ_CONFIG`, `SZQ_LANG` (`en`|`ko`),
 `SZQ_CACHE_SALT`, `SZQ_AGENT=1` (treat this shell as an agent). Human kill switch: create an empty file named
@@ -180,20 +184,22 @@ Windows). Environment: `SZQ_CONCURRENCY`, `SZQ_HOME` (state directory), `SZQ_CON
 
 ## Benchmarks
 
-Full tables and methodology: [bench/RESULTS.md](bench/RESULTS.md); reproduce with `npm run bench`. Measured on an Apple
-M1 Pro (8 cores) that was lightly loaded by other work (24% CPU before the run), 8 simultaneous "agents":
+Methodology, profile and before/after numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw tables:
+[bench/RESULTS.md](bench/RESULTS.md); reproduce with `npm run bench`. Measured on an Apple M1 Pro (8 cores) that other
+work kept busy, 8 simultaneous "agents":
 
 | Scenario | without szq | with szq |
 |---|---|---|
-| 8 agents run the **same** command on the same code | 8 executions, 18.4 CPU-s, 100% CPU | **1 execution, 2 CPU-s**, 56% CPU; wall time about the same (3.0 s vs 3.5 s) |
-| 8 agents run a real `tsc --noEmit` (generated project) on the same code | 13.0 s | **3.7 s** |
-| 8 agents run 8 **different** commands | all at once, 3.0 s | queued 2 at a time, **11.2 s - slower** |
-| repeat the same command on unchanged code | every call runs | first call runs, the rest take ~0.1 s |
-| output an agent has to read (2,502 lines, one error) | 8,968 tokens (approx.) | `--digest`: 280 tokens (approx.), error kept |
+| 8 agents run the **same** command on the same code | 8 executions, 18 CPU-s, 100% CPU, 2.7-3.0 s | **1 execution, 2 CPU-s**, 43-56% CPU, **2.2 s** |
+| 8 agents run a real `tsc --noEmit` (generated project) on the same code | 8.3-9.6 s | **2.9-3.2 s** |
+| 8 agents run 8 **different** commands | all at once, 2.7 s | queued: **8.5 s** on a lightly loaded machine, 17 s when other work keeps it busy - **slower** |
+| repeat the same command on unchanged code | every call runs | first call runs, the rest take **~0.07 s** |
+| output an agent has to read (2,502 lines, one error) | ~8,968 tokens | `--digest`: ~280 tokens, error kept |
 
-The queue is a **trade of throughput for responsiveness**: on an idle machine, distinct commands finish later than in
-a stampede (raise `concurrency` if your machine has headroom), but the machine stays usable and duplicated work
-disappears. The numbers describe one laptop at one moment; run the benchmark on yours.
+The queue is a **trade of throughput for responsiveness**: distinct commands finish later than in a stampede on an idle
+machine, but the machine stays usable and duplicated work disappears. It only starts as many runs as the CPU can take
+and drops to one when the machine is busy; raise `concurrency` if you prefer speed. The numbers describe one laptop at
+one moment; run the benchmark on yours.
 
 ## Compared with tman and friends
 
@@ -202,7 +208,7 @@ more mature in process supervision. Comparison based on each project's public RE
 
 | | szq | [tman](https://github.com/standardbeagle/tman) |
 |---|---|---|
-| Machine-wide queue with a cap | yes (default CPUs/4) | yes (default 2 per queue; admission by expected core/memory cost) |
+| Machine-wide queue with a cap | yes (starts at CPUs/4, grows with CPU headroom) | yes (default 2 per queue; admission by expected core/memory cost) |
 | Handling of an identical request | **waits and shares the result**; results cached by working-tree content | refuses the duplicate by name (per directory); no result reuse described |
 | Why was it a cache miss? | `szq explain` | not described |
 | Output for agents | `--digest` (head/tail/errors inline + full log path) | run logs and failure digests as files |
@@ -224,8 +230,8 @@ Turborepo/Nx caches): [docs/ALTERNATIVES.md](docs/ALTERNATIVES.md).
 State is private to your user (mode `0700`, ownership checked, symlinks refused). szq never lets git run
 repository-defined helpers (it only lists files and hashes them itself), uses no shell on POSIX, kills only process
 groups it can positively identify, and its hook is fail-open. Cached output is stored in plain text - **do not run
-commands that print secrets through the cache** (use `--no-cache`). The design went through an independent
-adversarial review before release; findings and fixes are in [CHANGELOG.md](CHANGELOG.md). Full model and how to report
+commands that print secrets through the cache** (use `--no-cache`). The code went through two independent
+adversarial reviews before release; findings and fixes are in [CHANGELOG.md](CHANGELOG.md). Full model and how to report
 vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Contributing
