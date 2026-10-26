@@ -6,6 +6,8 @@ const builtin = {
   codex: require('./codex'),
   cursor: require('./cursor'),
   gemini: require('./gemini'),
+  windsurf: require('./windsurf'),
+  copilot: require('./copilot'),
 };
 
 const REQUIRED = ['id', 'parse', 'allow', 'deny', 'target', 'apply', 'remove', 'has'];
@@ -32,6 +34,11 @@ function list() {
  * an adapter runs inside the agent's hook, so it must be something the user chose deliberately).
  */
 function loadExternal(file) {
+  if (!path.isAbsolute(file)) {
+    // A relative path would be resolved against whatever directory the agent happens to be in, i.e. a
+    // repository could plant the file. The installer always pins an absolute, symlink-free path.
+    throw new Error('adapter modules must be given as an absolute path');
+  }
   const abs = path.resolve(file);
   // eslint-disable-next-line global-require, import/no-dynamic-require
   return validate(require(abs), abs);

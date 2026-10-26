@@ -2,9 +2,11 @@
 const fs = require('fs');
 const path = require('path');
 const { isWin } = require('./platform');
-const { entryPath } = require('./adapters/installer');
+const { entryPath, shq } = require('./adapters/installer');
 
 const MARK = 'szq run-shim';
+// A shim named like one of these would run itself (or break the shell); never create them.
+const FORBIDDEN = new Set(['node', 'szq', 'sh', 'bash', 'zsh', 'git', 'env', 'cmd', 'powershell']);
 
 /**
  * PATH shims: tiny launchers named like the guarded tools (tsc, vitest, jest ...) that route every
@@ -14,20 +16,40 @@ const MARK = 'szq run-shim';
 function body(name, entry) {
   // The shim tells szq where it lives (SZQ_SHIM_DIR) so that directory can be removed from PATH when
   // the real tool is looked up - otherwise the shim would find itself again.
-  if (isWin) return `@echo off\r\nrem ${MARK}\r\nset "SZQ_SHIM_DIR=%~dp0"\r\nnode "${entry}" run-shim ${name} %*\r\n`;
-  return `#!/bin/sh\n# ${MARK}\nSZQ_SHIM_DIR="$(cd "$(dirname "$0")" && pwd)" exec node "${entry}" run-shim ${name} "$@"\n`;
+  if (isWin) return `@echo off\r\nrem ${MARK}\r\nset "SZQ_SHIM_DIR=%~dp0"\r\nnode ${shq(entry)} run-shim ${name} %*\r\n`;
+  return `#!/bin/sh\n# ${MARK}\nSZQ_SHIM_DIR="$(cd "$(dirname "$0")" && pwd)" exec node ${shq(entry)} run-shim ${name} "$@"\n`;
+}
+
+/** A regular file whose second line is our marker - nothing else is ever overwritten or removed. */
+function isShim(file) {
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > 4096) return false;
+    const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
+    return Boolean(lines[1] && lines[1].replace(/^(#|rem)\s*/, '') === MARK);
+  } catch {
+    return false;
+  }
 }
 
 function install(dir, names, { entry = entryPath() } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const written = [];
+  const skipped = [];
   for (const name of names) {
-    if (!/^[\w.@+-]{1,64}$/.test(name)) continue;
+    if (!/^[\w.@+-]{1,64}$/.test(name) || FORBIDDEN.has(name.toLowerCase())) {
+      skipped.push(`${name} (not allowed as a shim name)`);
+      continue;
+    }
     const file = path.join(dir, isWin ? `${name}.cmd` : name);
+    if (fs.existsSync(file) && !isShim(file)) {
+      skipped.push(`${name} (a different file already exists at ${file})`);
+      continue;
+    }
     fs.writeFileSync(file, body(name, entry), { mode: 0o755 });
     written.push(file);
   }
-  return written;
+  return { written, skipped };
 }
 
 function uninstall(dir) {
@@ -40,13 +62,9 @@ function uninstall(dir) {
   }
   for (const n of names) {
     const file = path.join(dir, n);
-    try {
-      if (fs.readFileSync(file, 'utf8').includes(MARK)) {
-        fs.unlinkSync(file);
-        removed.push(file);
-      }
-    } catch {
-      /* not ours */
+    if (isShim(file)) {
+      fs.unlinkSync(file);
+      removed.push(file);
     }
   }
   return removed;
@@ -54,13 +72,7 @@ function uninstall(dir) {
 
 function list(dir) {
   try {
-    return fs.readdirSync(dir).filter((n) => {
-      try {
-        return fs.readFileSync(path.join(dir, n), 'utf8').includes(MARK);
-      } catch {
-        return false;
-      }
-    });
+    return fs.readdirSync(dir).filter((n) => isShim(path.join(dir, n)));
   } catch {
     return [];
   }
@@ -71,4 +83,4 @@ function pathHint(dir) {
   return `export PATH="${dir}:$PATH"   # add to your shell profile`;
 }
 
-module.exports = { install, uninstall, list, pathHint, MARK };
+module.exports = { install, uninstall, list, pathHint, isShim, MARK };

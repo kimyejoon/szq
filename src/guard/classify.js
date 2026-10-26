@@ -4,16 +4,22 @@
  * Decide whether a shell command line starts one of the guarded heavy commands directly.
  *
  * This is a *seatbelt for well-behaved agents*, not a security boundary: a determined caller can
- * always obfuscate a command (`eval`, base64, a script file that runs tsc ...). See SECURITY.md.
+ * always obfuscate a command (`eval`, base64, a script file that runs tsc). See SECURITY.md.
  * It is deliberately conservative about false positives - it parses shell structure roughly
  * instead of grepping, so `git commit -m "fix tsc"` or `pnpm add -D vitest` are not blocked.
+ *
+ * It runs before every shell command of an agent, so it is a single linear pass (no backtracking
+ * regular expressions over user input) and inspects at most MAX_INPUT characters.
  */
 
+const MAX_INPUT = 64 * 1024;
 const RUNNERS = new Set(['pnpm', 'pnpx', 'npm', 'yarn', 'bun', 'npx', 'bunx', 'turbo']);
 const WRAPPERS = new Set(['env', 'time', 'command', 'nohup', 'sudo', 'exec', 'nice', 'caffeinate', 'builtin', 'xargs']);
-const VALUE_OPTS = new Set(['--filter', '-F', '-C', '--dir', '--prefix', '--workspace', '-w', '--cwd']);
+const VALUE_OPTS = new Set(['--filter', '-F', '-C', '--dir', '--prefix', '--workspace', '--cwd']);
+const LIGHT_FLAGS = new Set(['--version', '-v', '-V', '--help', '-h']);
 const NODE_BIN_RE =
   /(typescript[\\/](bin|lib)[\\/]tsc(\.js)?|vitest[\\/]vitest\.mjs|[\\/]\.bin[\\/](tsc|vitest|jest)|jest[\\/]bin[\\/]jest(\.js)?)$/;
+const HEREDOC_RE = /^<<(-?)\s*(?:'([^'\n]{1,64})'|"([^"\n]{1,64})"|([^\s'"<>;|&()]{1,64}))/;
 
 function baseName(p) {
   return String(p || '')
@@ -22,31 +28,75 @@ function baseName(p) {
     .replace(/\.(cmd|exe|ps1|bat)$/i, '');
 }
 
-/** Replace quoted text and heredoc bodies so only command structure remains. */
+/**
+ * One pass: replaces quoted text by `Q`, drops heredoc bodies, comments and line continuations.
+ * What remains is the command structure only.
+ */
 function strip(cmd) {
-  const s = cmd.replace(/<<-?\s*(['"]?)([A-Za-z_]\w*)\1[^\n]*\n[\s\S]*?\n\s*\2(?=\n|$)/g, '\n');
+  const s = cmd.length > MAX_INPUT ? cmd.slice(0, MAX_INPUT) : cmd;
+  const n = s.length;
   let out = '';
   let q = '';
-  for (let i = 0; i < s.length; i++) {
+  const pending = []; // heredocs whose bodies start after the current line
+  let i = 0;
+  while (i < n) {
     const c = s[i];
     if (q) {
-      if (c === '\\' && q === '"' && i + 1 < s.length) i++;
-      else if (c === q) {
-        q = '';
-        out += 'Q';
+      if (c === '\\' && q === '"' && i + 1 < n) i += 2;
+      else {
+        if (c === q) {
+          q = '';
+          out += 'Q';
+        }
+        i++;
       }
-    } else if (c === "'" || c === '"') q = c;
-    else if (c === '\\' && /[;&|()<>"'\\ ]/.test(s[i + 1] || '')) {
-      out += ' ';
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      q = c;
       i++;
-    } else out += c;
+    } else if (c === '\\' && s[i + 1] === '\n') {
+      out += ' ';
+      i += 2;
+    } else if (c === '\\' && i + 1 < n && ';&|()<>"\'\\ '.includes(s[i + 1])) {
+      out += ' ';
+      i += 2;
+    } else if (c === '#' && (i === 0 || /[\s;&|(]/.test(s[i - 1]))) {
+      while (i < n && s[i] !== '\n') i++; // comment to end of line
+    } else if (c === '<' && s[i + 1] === '<' && s[i + 2] !== '<') {
+      const m = HEREDOC_RE.exec(s.slice(i, i + 160));
+      if (m) {
+        pending.push({ dash: m[1] === '-', delim: m[2] || m[3] || m[4] });
+        i += m[0].length;
+      } else {
+        out += c;
+        i++;
+      }
+    } else if (c === '\n') {
+      out += '\n';
+      i++;
+      for (const h of pending) {
+        // skip body lines up to and including the terminator line
+        while (i < n) {
+          let eol = s.indexOf('\n', i);
+          if (eol === -1) eol = n;
+          const line = s.slice(i, eol);
+          i = Math.min(n, eol + 1);
+          if ((h.dash ? line.replace(/^\t+/, '') : line) === h.delim) break;
+        }
+      }
+      pending.length = 0;
+    } else {
+      out += c;
+      i++;
+    }
   }
   return out;
 }
 
 function segments(cmd) {
   return strip(cmd)
-    .split(/;|&&|\|\||\||&|\n|`|\$\(|\(|\)|\{|\}/)
+    .split(/[;&|\n`(){}]|\$\(/)
     .map((x) => x.trim())
     .filter(Boolean);
 }
@@ -74,6 +124,7 @@ function createClassifier(rules) {
     const colon = v.indexOf(':'); // test:watch, typecheck:ci ...
     return colon > 0 && scripts.has(v.slice(0, colon));
   };
+  const light = (args) => args.some((a) => LIGHT_FLAGS.has(a)); // `tsc --version` is not heavy
 
   return function classify(command) {
     if (typeof command !== 'string' || !command) return null;
@@ -82,10 +133,13 @@ function createClassifier(rules) {
       if (!w.length) continue;
       const a0 = baseName(w[0]).toLowerCase();
       if (a0 === 'szq') continue; // already goes through the queue
-      if (direct.has(a0)) return a0;
+      if (direct.has(a0)) {
+        if (light(w.slice(1))) continue;
+        return a0;
+      }
       if (a0 === 'node' || a0 === 'bun') {
         const target = w.slice(1).find((x) => !x.startsWith('-'));
-        if (target && NODE_BIN_RE.test(target)) return target;
+        if (target && NODE_BIN_RE.test(target) && !light(w.slice(1))) return target;
         continue;
       }
       if (!RUNNERS.has(a0)) continue;
@@ -100,8 +154,8 @@ function createClassifier(rules) {
       else if (['exec', 'dlx', 'x'].includes(sub)) sub = undefined;
       else if (sub === 'run' || sub === 'run-script') [sub, target] = [target, undefined];
       else target = undefined;
-      if (target && direct.has(baseName(target).toLowerCase())) return baseName(target);
-      if (sub && direct.has(sub.toLowerCase()) && a0 !== 'turbo') return sub;
+      if (target && direct.has(baseName(target).toLowerCase()) && !light(w.slice(1))) return baseName(target);
+      if (sub && direct.has(sub.toLowerCase()) && a0 !== 'turbo' && !light(w.slice(1))) return sub;
       if (sub && isScript(sub)) return `${a0} ${sub}`;
       if (a0 === 'turbo' && rest.some(isScript)) return `turbo ${rest.find(isScript)}`;
     }
@@ -109,4 +163,4 @@ function createClassifier(rules) {
   };
 }
 
-module.exports = { createClassifier, strip, segments, words, baseName };
+module.exports = { createClassifier, strip, segments, words, baseName, MAX_INPUT };

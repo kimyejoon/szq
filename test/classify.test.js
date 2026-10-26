@@ -34,6 +34,13 @@ const BLOCK = [
 ];
 
 const PASS = [
+  'tsc --version',
+  'vitest --help',
+  "echo hi # later; tsc",
+  'cat <<DOC-END\nnpm test\nDOC-END',
+  "cat <<'EOF-1'\njest\nEOF-1\ngit status",
+  'git status \\\n  jest',
+
   '',
   'szq tsc --noEmit',
   '~/.local/bin/szq pnpm test',
@@ -72,4 +79,24 @@ test('custom command list extends the guard', () => {
 test('non-string input is ignored', () => {
   assert.equal(classify(undefined), null);
   assert.equal(classify(42), null);
+});
+
+test('line continuations join lines: a continued command is one command', () => {
+  assert.ok(classify('pnpm \\\n  test'));
+});
+
+test('commands after a heredoc are still inspected', () => {
+  assert.ok(classify('cat <<EOF\nhello\nEOF\ntsc --noEmit'));
+});
+
+test('pathological input is classified in linear time', () => {
+  for (const evil of ['cat <<' + 'A'.repeat(40000), 'cat <<EOF\n' + '\n'.repeat(40000), '"' + 'a'.repeat(100000), '$('.repeat(20000), ';'.repeat(100000)]) {
+    const t0 = Date.now();
+    classify(evil);
+    assert.ok(Date.now() - t0 < 300, `took ${Date.now() - t0}ms for ${evil.slice(0, 20)}`);
+  }
+});
+
+test('only the first 64 KiB are inspected', () => {
+  assert.equal(classify(`echo ${'a'.repeat(70000)}; tsc`), null);
 });

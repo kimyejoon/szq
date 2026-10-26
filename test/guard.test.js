@@ -18,7 +18,7 @@ test('claude-code guard denies a direct tsc and teaches the szq form', async () 
   const out = JSON.parse(r.stdout).hookSpecificOutput;
   assert.equal(out.permissionDecision, 'deny');
   assert.match(out.permissionDecisionReason, /szq/);
-  assert.match(out.permissionDecisionReason, /szq tsc --noEmit/);
+  assert.match(out.permissionDecisionReason, /szq --digest tsc --noEmit/);
 });
 
 test('claude-code guard stays silent for ordinary commands and for szq itself', async () => {
@@ -68,7 +68,7 @@ test('a DISABLE file in the state directory turns the guard off', async () => {
 
 test('guard honours the configured command list', async () => {
   const { env, home } = mkEnv();
-  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ guard: { commands: ['pytest'], scripts: ['check'] } }));
+  fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ adaptive: { enabled: false }, guard: { commands: ['pytest'], scripts: ['check'] } }));
   assert.equal((await szq(['guard', 'claude-code'], { env, input: ev.claude('pytest -q') })).stdout.includes('deny'), true);
   assert.equal((await szq(['guard', 'claude-code'], { env, input: ev.claude('pnpm run check') })).stdout.includes('deny'), true);
   assert.equal((await szq(['guard', 'claude-code'], { env, input: ev.claude('tsc') })).stdout, '');
@@ -97,4 +97,31 @@ test('hook install/uninstall via the CLI into a temporary HOME', async () => {
   assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /guard claude-code/);
   const bad = await szq(['hook', 'install', 'nope'], { env: e });
   assert.equal(bad.code, 64);
+});
+
+test('windsurf and copilot guards answer in their own dialect', async () => {
+  const { env } = mkEnv();
+  const ws = await szq(['guard', 'windsurf'], { env, input: JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { command_line: 'pnpm test', cwd: '/x' } }) });
+  assert.equal(ws.code, 2);
+  assert.match(ws.stderr, /szq/);
+  const cp = await szq(['guard', 'copilot'], { env, input: JSON.stringify({ toolName: 'bash', toolArgs: { command: 'vitest run' } }) });
+  assert.equal(cp.code, 0);
+  assert.equal(JSON.parse(cp.stdout).permissionDecision, 'deny');
+});
+
+test('cursor keeps answering "allow" in JSON even when something goes wrong after the adapter is known', async () => {
+  const { env } = mkEnv();
+  const r = await szq(['guard', 'cursor'], { env, input: 'not json' });
+  assert.equal(r.code, 0);
+  assert.deepEqual(JSON.parse(r.stdout), { permission: 'allow' });
+});
+
+test('a relative --adapter-module is ignored by the guard (fail-open, nothing is loaded)', async () => {
+  const { env, home } = mkEnv();
+  const evil = path.join(home, 'evil.js');
+  const marker = path.join(home, 'pwned');
+  fs.writeFileSync(evil, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x'); module.exports = {};`);
+  const r = await szq(['guard', 'mine', '--adapter-module', './evil.js'], { cwd: home, env, input: ev.claude('tsc') });
+  assert.equal(r.code, 0);
+  assert.equal(fs.existsSync(marker), false, 'a repository-relative module must not be executed');
 });

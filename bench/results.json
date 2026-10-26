@@ -1,14 +1,14 @@
 {
-  "date": "2026-10-26T06:06:14.001Z",
+  "date": "2026-10-26T06:28:14.841Z",
   "machine": "Apple M1 Pro x8, 16 GiB, darwin 25.0.0",
   "node": "v22.23.1",
   "agents": 8,
   "cpuMsPerJob": 2000,
-  "backgroundCpuPct": 100,
+  "backgroundCpuPct": 24,
   "loadavgAtStart": [
-    71.8,
-    69.1,
-    43.5
+    9.5,
+    15,
+    23.4
   ],
   "szqConcurrency": 2,
   "scenarios": [
@@ -17,22 +17,22 @@
       "rows": [
         {
           "label": "without szq",
-          "wallS": 9.29,
+          "wallS": 3,
           "executions": 8,
           "maxParallel": 8,
-          "cpuSecondsOfWork": 16.6,
+          "cpuSecondsOfWork": 18.4,
           "avgCpuPct": 100,
           "peakCpuPct": 100,
           "failures": 0
         },
         {
           "label": "with szq",
-          "wallS": 5.67,
+          "wallS": 3.46,
           "executions": 1,
           "maxParallel": 1,
           "cpuSecondsOfWork": 2,
-          "avgCpuPct": 94,
-          "peakCpuPct": 100,
+          "avgCpuPct": 56,
+          "peakCpuPct": 92,
           "failures": 0
         }
       ]
@@ -42,22 +42,22 @@
       "rows": [
         {
           "label": "without szq",
-          "wallS": 7.26,
+          "wallS": 2.95,
           "executions": 8,
           "maxParallel": 8,
-          "cpuSecondsOfWork": 16.9,
+          "cpuSecondsOfWork": 18.6,
           "avgCpuPct": 100,
           "peakCpuPct": 100,
           "failures": 0
         },
         {
           "label": "with szq",
-          "wallS": 12.82,
+          "wallS": 11.22,
           "executions": 8,
           "maxParallel": 2,
-          "cpuSecondsOfWork": 15.3,
-          "avgCpuPct": 93,
-          "peakCpuPct": 100,
+          "cpuSecondsOfWork": 16.4,
+          "avgCpuPct": 63,
+          "peakCpuPct": 99,
           "failures": 0
         }
       ]
@@ -67,7 +67,7 @@
       "rows": [
         {
           "label": "without szq",
-          "wallS": 18.72,
+          "wallS": 12.96,
           "executions": 0,
           "maxParallel": null,
           "cpuSecondsOfWork": null,
@@ -77,12 +77,12 @@
         },
         {
           "label": "with szq",
-          "wallS": 5.57,
+          "wallS": 3.69,
           "executions": 1,
           "maxParallel": null,
           "cpuSecondsOfWork": null,
-          "avgCpuPct": 94,
-          "peakCpuPct": 100,
+          "avgCpuPct": 62,
+          "peakCpuPct": 97,
           "failures": 0
         }
       ]
@@ -90,12 +90,29 @@
   ],
   "repeat": {
     "secondsPerCall": [
-      2.56,
+      2.39,
+      0.12,
+      0.12,
       0.13,
-      0.15,
-      0.14,
-      0.11
+      0.15
     ],
     "executions": 1
+  },
+  "output": {
+    "full": {
+      "bytes": 35870,
+      "lines": 2502,
+      "keptError": true
+    },
+    "digest": {
+      "bytes": 1119,
+      "lines": 63,
+      "keptError": true
+    },
+    "reductionPct": 97,
+    "approxTokens": {
+      "full": 8968,
+      "digest": 280
+    }
   }
 }

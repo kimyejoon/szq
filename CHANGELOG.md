@@ -9,19 +9,48 @@ All notable changes to this project are documented here. The format follows
 First public version.
 
 ### Added
-- FIFO queue shared by all processes of a user, with a configurable concurrency cap
-  (`auto` = CPUs / 4), queue position output, per-run timeout and maximum wait.
-- Result sharing: identical commands on an identical git working tree (HEAD + tracked changes +
-  untracked files) run once; concurrent duplicates wait for and replay the leader's result.
-  Successful results are cached for 24 h, failed results for 10 min.
-- Self-healing queue: dead owners are detected by pid and heartbeat, their tickets are removed and
-  orphaned child processes are terminated; a follower takes over when the leader dies.
-- Guard hooks (`szq guard`) and installer (`szq hook install|uninstall|status`) with adapters for
-  Claude Code, OpenAI Codex CLI and Cursor, plus an experimental Gemini CLI adapter. The installer
-  is idempotent, keeps timestamped backups and refuses to touch files it cannot parse.
-- Adapter interface for third-party agents (`--adapter-module`).
-- PATH shims (`szq shim`) and a rules block generator (`szq rules`) for agents without hooks.
-- Windows support (PATHEXT resolution, `.cmd` shims through `cmd.exe` with argument rejection,
-  `taskkill /T`), covered by CI on `windows-latest`.
-- English and Korean CLI messages and documentation.
-- Benchmarks (`npm run bench`).
+- FIFO queue shared by all processes of a user, with a configurable concurrency cap (`auto` = CPUs / 4), queue
+  position output, per-run timeout and maximum wait. **Adaptive**: the cap drops to 1 while the machine is busy for
+  reasons outside the queue. **Human-first**: runs typed in a terminal go before agent runs (`--priority`).
+  `--exclusive` runs alone.
+- Result sharing: identical commands on an identical git working tree run once; concurrent duplicates wait for and
+  replay the leader's result. Successful results are cached for 24 h, failed results for 10 min. `szq explain` names the
+  files that changed since the last run; `szq stats` reports the work avoided.
+- `--digest`: long output is reduced to head, tail and error lines with a pointer to the full log (`szq logs`);
+  automatic for agents writing to a pipe (`CLAUDECODE`, `SZQ_AGENT`).
+- Supervision: `--stall` and `--max-mem` (POSIX) in addition to `--timeout`; exit codes 124/125/126.
+- Self-healing queue: dead owners are detected by pid and start time, their tickets are removed and orphaned child
+  processes are terminated; a follower takes over when the leader dies.
+- Guard hooks (`szq guard`) and installer (`szq hook install|uninstall|status`) with adapters for Claude Code, OpenAI
+  Codex CLI, Cursor, Windsurf and GitHub Copilot CLI, plus an experimental Gemini CLI adapter. The installer is
+  idempotent, keeps timestamped backups and refuses to touch files it cannot parse.
+- Adapter interface for third-party agents (`--adapter-module`), PATH shims (`szq shim`), rules block generator
+  (`szq rules`).
+- Windows support (PATHEXT resolution, `.cmd` shims through `cmd.exe` with argument rejection, `taskkill /T`), covered by
+  CI on `windows-latest`.
+- English and Korean CLI messages and documentation; benchmarks (`npm run bench`).
+
+### Security
+An independent adversarial review before the first release found the following, all fixed with regression tests:
+
+- **Medium** - a relative `--adapter-module` was resolved against the agent's working directory, so a repository could
+  have its own code executed by the hook. Paths are now pinned to an absolute, symlink-free path at install time and
+  relative paths are refused at load time.
+- **Medium** - orphan cleanup could signal an unrelated process: it fell back to signalling the bare pid when the group
+  was gone (pid reuse), did not validate pids (`1`, `-1`), and trusted tickets from other hosts. Signals now go only to
+  process groups, only for valid pids, only when host and recorded start time match.
+- **Medium** - computing the cache key ran `git diff`, which applies repository-defined clean filters. Contents are now
+  hashed by szq itself; git only lists files.
+- **Medium** - changes inside submodules were invisible to the cache key. Submodules are fingerprinted recursively.
+- **Medium** - a result was stored under the key computed *before* the run even if the tree changed meanwhile. The key is
+  recomputed afterwards and the result is not cached on a mismatch.
+- **Low** - hook never answered "allow" in the adapter's own dialect on internal errors (Cursor treats an empty answer as
+  a block); GUI agents default to an absolute `node` path.
+- **Low** - quadratic-time heredoc parsing in the guard (seconds for a 40 KB input); replaced by a linear scanner with an
+  input cap. False positives fixed (`jest -w 2`, hyphenated heredoc delimiters, comments, line continuations,
+  `--version`/`--help`).
+- **Low** - the installer replaced a symlinked config file by a regular file; `config set` overwrote a broken config
+  without backup; hook/shim commands were not safely quoted for paths with `$()`/backticks; the cache key could be
+  forged through file-name/content boundary ambiguity; shims could overwrite foreign files and `uninstall` could delete
+  any file containing the marker text; `node_modules/.bin` was prepended to `PATH` for every command; stale-mutex
+  breaking and sleeping laptops could exceed the concurrency cap; malformed tickets could crash waiting runs.

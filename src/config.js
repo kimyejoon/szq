@@ -11,6 +11,15 @@ const DEFAULTS = Object.freeze({
   concurrency: 'auto',
   timeoutSec: 900,
   maxWaitSec: 1800,
+  // Kill a run that prints nothing for this long (0 = off). Note: tsc is silent until it finishes.
+  stallSec: 0,
+  // Kill a run whose process tree exceeds this resident memory (0 = off, POSIX only).
+  maxMemMB: 0,
+  // Back off when the machine is already busy for reasons outside the queue.
+  adaptive: { enabled: true, loadPerCpu: 1.5 },
+  // 'auto' = digest when stdout is not a terminal AND an agent environment is detected.
+  output: { digest: 'auto', maxLines: 200, head: 15, tail: 40 },
+  logs: { keep: 50 },
   cache: {
     enabled: true,
     successTtlHours: 24,
@@ -18,6 +27,9 @@ const DEFAULTS = Object.freeze({
     maxEntryMB: 4,
     // Names of environment variables whose values are part of the cache key.
     env: [],
+    // Extra files (relative to the repository root) whose content is part of the cache key,
+    // e.g. ["node_modules/.modules.yaml"] to notice installs that git cannot see.
+    extraFiles: [],
   },
   // Opt-in rewriting of the command line (off by default - szq does not change what you run).
   incremental: { tsc: false },
@@ -50,6 +62,10 @@ function resolvePaths(env = process.env, home = os.homedir()) {
     shimDir: path.join(stateDir, 'shims'),
     claimDir: path.join(stateDir, 'claim.lock'),
     disableFile: path.join(stateDir, 'DISABLE'),
+    logDir: path.join(stateDir, 'logs'),
+    statDir: path.join(stateDir, 'statcache'),
+    lastDir: path.join(stateDir, 'last'),
+    statsFile: path.join(stateDir, 'stats.jsonl'),
   };
 }
 
@@ -60,6 +76,13 @@ function isPlainObject(v) {
 function posInt(v, fallback) {
   const n = Number(v);
   return Number.isFinite(n) && n >= 1 ? Math.floor(n) : fallback;
+}
+
+function relPathList(v) {
+  if (!Array.isArray(v)) return [];
+  return v.filter(
+    (x) => typeof x === 'string' && /^[\w.@+/-]{1,200}$/.test(x) && !x.startsWith('/') && !x.split('/').some((seg) => seg === '..' || seg === ''),
+  );
 }
 
 function strList(v, fallback) {
@@ -74,17 +97,35 @@ function normalize(raw) {
   const cache = isPlainObject(r.cache) ? r.cache : {};
   const guard = isPlainObject(r.guard) ? r.guard : {};
   const inc = isPlainObject(r.incremental) ? r.incremental : {};
+  const adaptive = isPlainObject(r.adaptive) ? r.adaptive : {};
+  const output = isPlainObject(r.output) ? r.output : {};
+  const logs = isPlainObject(r.logs) ? r.logs : {};
+  const nonNeg = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.floor(Number(v)) : d);
   return {
     lang: typeof r.lang === 'string' ? r.lang : DEFAULTS.lang,
     concurrency: r.concurrency === 'auto' ? 'auto' : posInt(r.concurrency, 'auto'),
     timeoutSec: posInt(r.timeoutSec, DEFAULTS.timeoutSec),
     maxWaitSec: posInt(r.maxWaitSec, DEFAULTS.maxWaitSec),
+    stallSec: nonNeg(r.stallSec, DEFAULTS.stallSec),
+    maxMemMB: nonNeg(r.maxMemMB, DEFAULTS.maxMemMB),
+    adaptive: {
+      enabled: typeof adaptive.enabled === 'boolean' ? adaptive.enabled : DEFAULTS.adaptive.enabled,
+      loadPerCpu: Number(adaptive.loadPerCpu) > 0 ? Number(adaptive.loadPerCpu) : DEFAULTS.adaptive.loadPerCpu,
+    },
+    output: {
+      digest: ['auto', 'always', 'never'].includes(output.digest) ? output.digest : DEFAULTS.output.digest,
+      maxLines: nonNeg(output.maxLines, DEFAULTS.output.maxLines),
+      head: nonNeg(output.head, DEFAULTS.output.head),
+      tail: nonNeg(output.tail, DEFAULTS.output.tail),
+    },
+    logs: { keep: posInt(logs.keep, DEFAULTS.logs.keep) },
     cache: {
       enabled: typeof cache.enabled === 'boolean' ? cache.enabled : DEFAULTS.cache.enabled,
       successTtlHours: posInt(cache.successTtlHours, DEFAULTS.cache.successTtlHours),
       failureTtlMinutes: posInt(cache.failureTtlMinutes, DEFAULTS.cache.failureTtlMinutes),
       maxEntryMB: posInt(cache.maxEntryMB, DEFAULTS.cache.maxEntryMB),
       env: Array.isArray(cache.env) ? cache.env.filter((x) => typeof x === 'string' && /^[A-Za-z_]\w*$/.test(x)) : [],
+      extraFiles: relPathList(cache.extraFiles),
     },
     incremental: { tsc: typeof inc.tsc === 'boolean' ? inc.tsc : DEFAULTS.incremental.tsc },
     guard: {
@@ -130,7 +171,7 @@ function ensureDir(dir) {
 }
 
 function ensureStateDirs(paths) {
-  for (const d of [paths.stateDir, paths.queueDir, paths.cacheDir, paths.tsbuildDir]) ensureDir(d);
+  for (const d of [paths.stateDir, paths.queueDir, paths.cacheDir, paths.tsbuildDir, paths.logDir, paths.statDir, paths.lastDir]) ensureDir(d);
 }
 
 /** Set a dotted key (`cache.enabled`) in a plain object. */

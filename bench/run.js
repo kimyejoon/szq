@@ -10,6 +10,7 @@
  *   B  N agents run N DIFFERENT commands                      (baseline: all start at once)
  *   C  one agent repeats the same command 5 times, code unchanged
  *   D  (optional, needs --tsc) A with a real `tsc --noEmit` on a generated project
+ *   E  output volume: how much text an agent receives from a command that prints 2,500 lines
  *
  * The numbers describe THIS machine at THIS moment; background load is recorded in the output.
  */
@@ -87,6 +88,21 @@ function spawnAll(specs) {
           c.stderr.on('data', (b) => (stderr += b));
           c.stdout.resume();
           c.on('close', (code) => resolve({ code, stderr }));
+        }),
+    ),
+  );
+}
+
+function spawnAllCapture(specs) {
+  return Promise.all(
+    specs.map(
+      (s) =>
+        new Promise((resolve) => {
+          const c = cp.spawn(s.cmd, s.args, { cwd: s.cwd, env: s.env, stdio: ['ignore', 'pipe', 'pipe'] });
+          let stdout = '';
+          c.stdout.on('data', (b) => (stdout += b));
+          c.stderr.resume();
+          c.on('close', (code) => resolve({ code, stdout }));
         }),
     ),
   );
@@ -240,6 +256,19 @@ async function main() {
     );
   }
 
+  // ---- E: output volume (what an agent has to read) ----
+  {
+    const { env } = freshEnv();
+    const noisy = `for(let i=0;i<2000;i++)console.log('  ok test '+i);console.log('src/a.ts(1,1): error TS2322: Type string is not assignable to type number.');console.log('Found 1 error.');for(let i=0;i<500;i++)console.log('  ok more '+i)`;
+    const sizeOf = async (extra) => {
+      const [res] = await spawnAllCapture([{ cmd: process.execPath, args: [SZQ, '--no-cache', ...extra, '--', process.execPath, '-e', noisy], cwd: repo, env }]);
+      return { bytes: Buffer.byteLength(res.stdout), lines: res.stdout.split('\n').length - 1, keptError: /error TS2322/.test(res.stdout) };
+    };
+    const full = await sizeOf(['--no-digest']);
+    const dig = await sizeOf(['--digest']);
+    report.output = { full, digest: dig, reductionPct: +(100 * (1 - dig.bytes / full.bytes)).toFixed(0), approxTokens: { full: Math.round(full.bytes / 4), digest: Math.round(dig.bytes / 4) } };
+  }
+
   fs.writeFileSync(path.join(path.dirname(OUT), 'results.json'), `${JSON.stringify(report, null, 2)}\n`);
   fs.writeFileSync(OUT, toMarkdown(report));
   process.stdout.write(toMarkdown(report));
@@ -258,6 +287,11 @@ function toMarkdown(r) {
       md += `| ${x.label} | ${x.wallS} s | ${x.executions} | ${cell(x.maxParallel)} | ${cell(x.cpuSecondsOfWork)} | ${x.avgCpuPct} | ${x.peakCpuPct} |\n`;
     }
     md += '\n';
+  }
+  if (r.output) {
+    const o = r.output;
+    md += `## E. output volume (what an agent has to read)\n\nA command that prints ${o.full.lines} lines, one of them an error:\n\n| | lines | bytes | ~tokens (bytes/4) | kept the error line |\n|---|---|---|---|---|\n`;
+    md += `| plain output | ${o.full.lines} | ${o.full.bytes} | ${o.approxTokens.full} | ${o.full.keptError} |\n| \`--digest\` | ${o.digest.lines} | ${o.digest.bytes} | ${o.approxTokens.digest} | ${o.digest.keptError} |\n\n${o.reductionPct}% less text.\n\n`;
   }
   md += `## C. one agent repeating the same command, code unchanged\n\nSeconds per call: ${r.repeat.secondsPerCall.join(', ')} - the command actually ran ${r.repeat.executions} time(s).\n`;
   return md;

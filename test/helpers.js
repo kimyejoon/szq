@@ -33,9 +33,12 @@ function mkRepo() {
 /** Isolated state + config for one test. */
 function mkEnv(extra = {}) {
   const home = tmpDir('szq-home-');
-  const env = { ...process.env, SZQ_HOME: home, SZQ_CONFIG: path.join(home, 'config.json'), SZQ_LANG: 'en', ...extra };
-  delete env.SZQ_ACTIVE;
-  delete env.SZQ_CONCURRENCY;
+  const env = { ...process.env };
+  for (const k of ['SZQ_ACTIVE', 'SZQ_CONCURRENCY', 'CLAUDECODE', 'SZQ_AGENT']) delete env[k]; // digest-by-default depends on these
+  Object.assign(env, { SZQ_HOME: home, SZQ_CONFIG: path.join(home, 'config.json'), SZQ_LANG: 'en' }, extra);
+  // The machine running the tests may be busy; adaptive throttling would make scheduling tests flaky.
+  // (It has its own pure-function tests.)
+  fs.writeFileSync(env.SZQ_CONFIG, JSON.stringify({ adaptive: { enabled: false } }));
   return { home, env };
 }
 

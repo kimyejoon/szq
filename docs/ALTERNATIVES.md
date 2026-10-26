@@ -14,14 +14,22 @@ run logs and failure digests, and agent integrations for Claude Code, Codex, Gem
 (*rewriting* the command to go through tman) and Cursor, Antigravity, Kimi Code CLI, Copilot CLI
 (*gating*). Linux, macOS and Windows binaries.
 
-**Choose tman if** you want process supervision (kill hung runs, memory/CPU limits), a single prebuilt
-binary, or broader agent coverage today.
-**What szq does differently:** a duplicate run is not refused - it *waits and receives the same result*;
-results are cached by the content of the git working tree, so a repeated call on unchanged code returns
-instantly; the hooks *deny with an explanation* so the agent learns to prefix `szq` itself; it is a
-dependency-free Node package you can read in an afternoon. szq has **no** memory/CPU limits, no stall
-detection and no kill-on-hang beyond a plain timeout. As far as tman's README describes, it does not cache
-results or look at git state - verify that yourself before relying on this comparison.
+**Choose tman if** you want hard process supervision (kernel-enforced CPU/memory limits, stall detection with a
+conservative default), admission by expected core/memory cost, a single prebuilt binary, or broader agent coverage today.
+
+**What szq does differently:**
+- a duplicate run is not refused - it *waits and receives the same result*, and results are cached by the content of
+  the git working tree, so a repeated call on unchanged code returns instantly (`szq explain` says why a call missed,
+  `szq stats` how much work this saved);
+- `--digest` prints the head, tail and error lines of long output *in place of* the full text, keeps the full log, and
+  the hook tells the agent to use it (tman writes run logs and failure digests to files);
+- it backs off when the machine is busy for reasons outside the queue, lets a human at a terminal go first, and the
+  hooks *deny with an explanation* so the agent learns to prefix `szq` itself;
+- it is a dependency-free Node package you can read in an afternoon.
+
+szq has **no** CPU limits, no kernel-enforced memory limits, no cost-based admission, and its stall/memory
+supervision is opt-in and POSIX-only. As far as tman's README describes, it does not cache results or look at git
+state, and does not mention load-aware back-off - verify that yourself before relying on this comparison.
 
 ## tdd-cli ([geuben/tdd-cli](https://github.com/geuben/tdd-cli))
 
@@ -59,7 +67,7 @@ no agent hooks, no queue visibility, and is not available by default on macOS or
 
 - Several agents (or humans) share one machine and keep re-running the same checks on the same code.
 - You want agents to be *told* to use the queue, not silently rewritten.
-- You want something tiny you can audit: about 2,000 lines of dependency-free JavaScript.
+- You want something tiny you can audit: about 3,300 lines of dependency-free JavaScript.
 
 ## Where it is not
 

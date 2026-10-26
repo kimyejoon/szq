@@ -10,7 +10,7 @@ const { tmpDir } = require('./helpers');
 const ids = adapters.list().map((a) => a.id);
 
 test('built-in adapters satisfy the adapter contract', () => {
-  assert.deepEqual(ids.sort(), ['claude-code', 'codex', 'cursor', 'gemini']);
+  assert.deepEqual(ids.sort(), ['claude-code', 'codex', 'copilot', 'cursor', 'gemini', 'windsurf']);
   for (const a of adapters.list()) adapters.validate(a, a.id);
 });
 
@@ -49,7 +49,7 @@ test('gemini: denies with exit code 2 and the reason on stderr', () => {
   assert.equal(a.maturity, 'experimental');
 });
 
-for (const id of ['claude-code', 'codex', 'cursor', 'gemini']) {
+for (const id of ['claude-code', 'codex', 'cursor', 'gemini', 'windsurf', 'copilot']) {
   test(`${id}: install is idempotent, preserves other settings, backs up, and uninstall removes only ours`, () => {
     const adapter = adapters.get(id);
     const home = tmpDir();
@@ -154,6 +154,95 @@ test('external adapters load only from an explicit path and are validated', () =
 
 test('the generated hook command points at the szq entry script', () => {
   const cmd = installer.hookCommand('claude-code');
-  assert.match(cmd, /^node ".*bin[\\/]szq\.js" guard claude-code$/);
-  assert.match(installer.hookCommand('cursor', { absoluteNode: true }), new RegExp(`^"${process.execPath.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&')}"`));
+  assert.match(cmd, /^node ['"].*bin[\\/]szq\.js['"] guard claude-code$/);
+  const abs = installer.hookCommand('cursor', { absoluteNode: true });
+  assert.ok(abs.startsWith(process.platform === 'win32' ? process.execPath : `'${process.execPath}'`) || abs.startsWith('node '), abs);
+});
+
+test('relative adapter modules are refused at load time (a repository could plant the file)', () => {
+  assert.throws(() => adapters.loadExternal('./evil.js'), /absolute path/);
+});
+
+test('the installer pins --adapter-module to an absolute, symlink-free path', { skip: process.platform === 'win32' }, () => {
+  const dir = tmpDir();
+  const real = path.join(dir, 'real.js');
+  fs.writeFileSync(real, 'module.exports={}');
+  fs.symlinkSync(real, path.join(dir, 'link.js'));
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const cmd = installer.hookCommand('mine', { adapterModule: './link.js' });
+    assert.ok(cmd.includes(`'${fs.realpathSync(real)}'`), cmd);
+    assert.ok(!cmd.includes('./link.js'));
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test('hook commands quote hostile paths on POSIX', { skip: process.platform === 'win32' }, () => {
+  const dir = tmpDir();
+  const nasty = path.join(dir, "a $(touch pwned) `id` it's.js");
+  fs.writeFileSync(nasty, 'x');
+  const cmd = installer.hookCommand('claude-code', { entry: nasty });
+  const r = require('child_process').spawnSync('sh', ['-c', `${cmd.replace(/^node /, 'printf %s\\n ')}`], { cwd: dir, encoding: 'utf8' });
+  assert.equal(fs.existsSync(path.join(dir, 'pwned')), false, 'command substitution must not run');
+  assert.ok(r.stdout.includes('$(touch pwned)'));
+});
+
+test('a symlinked settings file stays a symlink and its target is updated', { skip: process.platform === 'win32' }, () => {
+  const adapter = adapters.get('claude-code');
+  const home = tmpDir();
+  const dotfiles = tmpDir();
+  const real = path.join(dotfiles, 'settings.json');
+  fs.writeFileSync(real, JSON.stringify({ theme: 'dark' }));
+  fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+  const link = path.join(home, '.claude', 'settings.json');
+  fs.symlinkSync(real, link);
+  installer.install(adapter, { home, cwd: home });
+  assert.ok(fs.lstatSync(link).isSymbolicLink(), 'link must survive');
+  assert.match(fs.readFileSync(real, 'utf8'), /guard claude-code/);
+  installer.uninstall(adapter, { home, cwd: home });
+  assert.ok(fs.lstatSync(link).isSymbolicLink());
+  assert.doesNotMatch(fs.readFileSync(real, 'utf8'), /guard claude-code/);
+});
+
+test('windsurf: parse + stderr/exit 2 deny', () => {
+  const a = adapters.get('windsurf');
+  const ev = { agent_action_name: 'pre_run_command', tool_info: { command_line: 'tsc', cwd: '/x' } };
+  assert.deepEqual(a.parse(JSON.stringify(ev)), { command: 'tsc', cwd: '/x' });
+  assert.equal(a.parse(JSON.stringify({ agent_action_name: 'post_run_command', tool_info: { command_line: 'tsc' } })), null);
+  const d = a.deny('why');
+  assert.equal(d.exitCode, 2);
+  assert.equal(d.stderr, 'why');
+  assert.equal(a.preferAbsoluteNode, true);
+});
+
+test('copilot: parses object and string toolArgs, denies with JSON, hook commands always exit 0', () => {
+  const a = adapters.get('copilot');
+  assert.deepEqual(a.parse(JSON.stringify({ toolName: 'bash', toolArgs: { command: 'ls' }, cwd: '/x' })), { command: 'ls', cwd: '/x' });
+  assert.deepEqual(a.parse(JSON.stringify({ toolName: 'bash', toolArgs: JSON.stringify({ command: 'ls' }) })), { command: 'ls', cwd: undefined });
+  assert.deepEqual(a.parse(JSON.stringify({ tool_name: 'powershell', tool_input: { command: 'ls' } })), { command: 'ls', cwd: undefined });
+  assert.equal(a.parse(JSON.stringify({ toolName: 'view', toolArgs: {} })), null);
+  assert.equal(JSON.parse(a.deny('x').stdout).permissionDecision, 'deny');
+  const doc = a.apply({}, "node '/p/szq.js' guard copilot");
+  const h = doc.hooks.preToolUse[0];
+  assert.match(h.bash, /\|\| exit 0$/);
+  assert.match(h.powershell, /; exit 0$/);
+});
+
+test('copilot owns its file: uninstall removes the whole file when nothing else is in it', () => {
+  const a = adapters.get('copilot');
+  const home = tmpDir();
+  const r = installer.install(a, { home, cwd: home });
+  assert.ok(fs.existsSync(r.file));
+  installer.uninstall(a, { home, cwd: home });
+  assert.equal(fs.existsSync(r.file), false);
+});
+
+test('cursor and windsurf default to an absolute node path (GUI apps have a minimal PATH)', () => {
+  const home = tmpDir();
+  const r = installer.install(adapters.get('cursor'), { home, cwd: home });
+  assert.ok(r.command.includes(process.execPath) || process.platform === 'win32');
+  const r2 = installer.install(adapters.get('cursor'), { home: tmpDir(), cwd: home, absoluteNode: false });
+  assert.ok(r2.command.startsWith('node '));
 });

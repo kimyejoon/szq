@@ -17,6 +17,8 @@ module.exports = {
   label: 'Cursor',
   maturity: 'verified',
   docs: 'https://cursor.com/docs/hooks',
+  // GUI applications often start with a minimal PATH that lacks `node`
+  preferAbsoluteNode: true,
 
   parse(raw) {
     const d = JSON.parse(raw);

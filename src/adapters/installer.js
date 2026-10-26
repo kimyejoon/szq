@@ -3,20 +3,44 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const isWin = process.platform === 'win32';
+
 /** Entry script that hooks must call. */
 function entryPath() {
   return fs.realpathSync(path.resolve(__dirname, '..', '..', 'bin', 'szq.js'));
 }
 
-function q(p) {
-  return `"${String(p).replace(/"/g, '\\"')}"`;
+/**
+ * Quote a path for the shell that will run the hook command.
+ * POSIX: single quotes (nothing inside is interpreted). Windows shells (cmd, PowerShell, Git Bash) disagree
+ * on quoting, so paths containing any character that one of them treats specially are refused.
+ */
+function shq(p) {
+  const s = String(p);
+  if (isWin) {
+    if (/["$`%!'&|<>^()\r\n]/.test(s)) throw new Error(`path contains characters that cannot be quoted safely for Windows shells: ${s}`);
+    return `"${s}"`;
+  }
+  return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function nodeWord(absoluteNode) {
+  if (!absoluteNode) return 'node';
+  // PowerShell would need `&` in front of a quoted program path and cmd.exe cannot have it, so on Windows
+  // the absolute path is used only when it needs no quoting.
+  if (isWin) return /[\s"$`%!'&|<>^()]/.test(process.execPath) ? 'node' : process.execPath;
+  return shq(process.execPath);
 }
 
 /** The shell command line an agent's hook configuration runs. */
 function hookCommand(adapterId, { absoluteNode = false, entry = entryPath(), adapterModule } = {}) {
-  const node = absoluteNode ? q(process.execPath) : 'node';
-  const mod = adapterModule ? ` --adapter-module ${q(adapterModule)}` : '';
-  return `${node} ${q(entry)} guard ${adapterId}${mod}`;
+  let mod = '';
+  if (adapterModule) {
+    // pinned to an absolute, symlink-free path NOW: resolving it later against the agent's cwd would
+    // let any repository plant a file of that name and have it executed.
+    mod = ` --adapter-module ${shq(fs.realpathSync(path.resolve(adapterModule)))}`;
+  }
+  return `${nodeWord(absoluteNode)} ${shq(entry)} guard ${adapterId}${mod}`;
 }
 
 /** True when a configured command string is one we generated for this adapter. */
@@ -44,17 +68,28 @@ function readJsonStrict(file) {
   return { doc, existed: true, mode: fs.statSync(file).mode & 0o777 };
 }
 
+/** Follow a symlinked config file (dotfile managers!) so the link survives and its target is updated. */
+function realTarget(file) {
+  try {
+    return fs.realpathSync(file);
+  } catch {
+    return file;
+  }
+}
+
 function writeJsonAtomic(file, doc, mode) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
+  const real = realTarget(file);
+  fs.mkdirSync(path.dirname(real), { recursive: true });
+  const tmp = `${real}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, `${JSON.stringify(doc, null, 2)}\n`, { mode });
-  fs.renameSync(tmp, file);
+  fs.renameSync(tmp, real);
 }
 
 function backupFile(file) {
+  const real = realTarget(file);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const dest = `${file}.szq-backup-${stamp}`;
-  fs.copyFileSync(file, dest);
+  const dest = `${real}.szq-backup-${stamp}`;
+  fs.copyFileSync(real, dest);
   return dest;
 }
 
@@ -70,7 +105,8 @@ function install(adapter, opts = {}) {
   const file = resolveTarget(adapter, opts);
   const { doc, existed, mode } = readJsonStrict(file);
   const before = JSON.stringify(doc);
-  const command = hookCommand(adapter.id, opts);
+  const absoluteNode = opts.absoluteNode ?? adapter.preferAbsoluteNode ?? false;
+  const command = hookCommand(adapter.id, { ...opts, absoluteNode });
   adapter.apply(doc, command);
   const changed = JSON.stringify(doc) !== before;
   const notes = adapter.notes ? adapter.notes({ ...opts, file }) : [];
@@ -87,7 +123,11 @@ function uninstall(adapter, opts = {}) {
   const changed = adapter.remove(doc);
   if (!changed || opts.dryRun) return { file, changed, backup: null, preview: `${JSON.stringify(doc, null, 2)}\n` };
   const backup = backupFile(file);
-  writeJsonAtomic(file, doc, mode);
+  if (adapter.ownsFile && Object.keys(doc).filter((k) => k !== 'version').length === 0) {
+    fs.unlinkSync(realTarget(file)); // a file that only ever contained our hook
+  } else {
+    writeJsonAtomic(file, doc, mode);
+  }
   return { file, changed, backup };
 }
 
@@ -101,4 +141,4 @@ function status(adapter, opts = {}) {
   }
 }
 
-module.exports = { entryPath, hookCommand, isOurs, readJsonStrict, writeJsonAtomic, install, uninstall, status, resolveTarget };
+module.exports = { entryPath, hookCommand, isOurs, shq, readJsonStrict, writeJsonAtomic, install, uninstall, status, resolveTarget };
