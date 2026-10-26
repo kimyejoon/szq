@@ -71,8 +71,10 @@ function probe(scenario) {
     }).catch(e => { console.error(e); process.exitCode = 1; });
   `;
   return new Promise((resolve, reject) => {
-    cp.execFile(process.execPath, ['-e', source], { timeout: 15000 }, (error, stdout, stderr) => {
-      if (error) return reject(new Error(`${error.message}\n${stdout}\n${stderr}`));
+    // Includes Node startup and a temporary git repository under parallel CI load.
+    // These are correctness probes; performance bounds live in perf.test.js.
+    cp.execFile(process.execPath, ['-e', source], { timeout: 60000 }, (error, stdout, stderr) => {
+      if (error) return reject(new Error(`${error.message}\ncode=${error.code} signal=${error.signal} killed=${error.killed}\n${stdout}\n${stderr}`));
       const match = /^PROBE (.+)$/m.exec(stdout);
       if (!match) return reject(new Error(`missing result: ${stdout}\n${stderr}`));
       resolve({ ...JSON.parse(match[1]), stdout, stderr });
