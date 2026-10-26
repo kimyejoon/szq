@@ -31,6 +31,8 @@ First public version.
 - English and Korean CLI messages and documentation; benchmarks (`npm run bench`).
 
 ### Fixed
+- Retry transient Windows `EPERM` errors when recreating the queue mutex under contention, with a bounded retry
+  budget that preserves persistent permission failures. Verified by injected-error regressions and Windows CI.
 - Close the cache-lookup/slot-claim race so a just-completed request is shared rather than executed twice.
 - Revalidate queued cache results and refresh a waited request before execution; changed requests re-enter admission
   under their new key, and fingerprint failures clear the old sharing key. Five deterministic regression tests.

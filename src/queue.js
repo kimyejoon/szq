@@ -101,6 +101,7 @@ class Queue {
 
   withClaim(fn) {
     const start = Date.now();
+    let permissionRetries = 0;
     const token = crypto.randomBytes(8).toString('hex');
     const ownerFile = path.join(this.claimDir, 'owner');
     for (;;) {
@@ -113,6 +114,15 @@ class Queue {
         }
         break;
       } catch (e) {
+        // On Windows, a just-removed directory may still be pending deletion while another
+        // process closes its handle. mkdir then reports EPERM instead of EEXIST. Retry
+        // briefly, but never enter the critical section without a successful mkdir and
+        // preserve persistent permission errors (at most 1 s of extra retry time).
+        if (process.platform === 'win32' && e.code === 'EPERM' && permissionRetries < 25 && Date.now() - start < 15000) {
+          permissionRetries++;
+          sleepSync(40);
+          continue;
+        }
         if (e.code !== 'EEXIST') throw e;
         try {
           if (Date.now() - fs.statSync(this.claimDir).mtimeMs > CLAIM_STALE_MS) {
