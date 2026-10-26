@@ -11,15 +11,15 @@ const { Logs } = require('./logs');
 const { digest } = require('./digest');
 const stats = require('./stats');
 const { killTree, buildInvocation, resolveLocalBin, groupRssKiB, procStart, isWin } = require('./platform');
-const { resolveConcurrency, ensureStateDirs } = require('./config');
+const { resolveConcurrency, resolveMaxConcurrency, isAutoConcurrency, ensureStateDirs } = require('./config');
+const { CpuMeter } = require('./cpu');
 
 const HEARTBEAT_MS = 5000;
-const POLL_MS = 1000;
+const POLL_MS = 500; // safety net: waiters are normally woken by file-system events (see makeWaker)
 const FOLLOW_POLL_MS = 250; // followers only read a cache file, so they can look more often
+const RECHECK_AFTER_MS = 500; // re-fingerprint after waiting only if we waited this long
 const WATCHDOG_MS = 2000;
 const MEM_CHECK_MS = Number(process.env.SZQ_MEM_INTERVAL_MS) > 0 ? Number(process.env.SZQ_MEM_INTERVAL_MS) : 5000; // overridable for tests
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function log(msg) {
   process.stderr.write(`[szq] ${msg}\n`);
@@ -114,6 +114,63 @@ function effectiveCap(cap, adaptive, loadavg = os.loadavg(), cpus = os.cpus().le
   return { cap: throttled ? 1 : cap, throttled, load: loadavg[0] };
 }
 
+/**
+ * Concurrency for the next start in 'auto' mode: the base value, plus one more while the machine has CPU headroom.
+ * Pure function of its inputs (tested without touching the real CPU).
+ */
+function growCap({ base, max, running, util, newestStartedAt, now, headroom }) {
+  if (running.length < base) return base;
+  if (running.length >= max) return base;
+  if (util === null || util === undefined) return base; // no measurement yet
+  const settled = !newestStartedAt || now - newestStartedAt >= headroom.settleMs;
+  return util < headroom.cpuBelow && settled ? running.length + 1 : base;
+}
+
+/** Wake a waiting run as soon as the queue or the cache directory changes (polling stays as a safety net). */
+function makeWaker(dirs) {
+  const watchers = [];
+  let wake = null;
+  const poke = () => {
+    if (wake) {
+      const w = wake;
+      wake = null;
+      w();
+    }
+  };
+  for (const d of dirs) {
+    try {
+      const w = fs.watch(d, { persistent: false }, poke);
+      w.on('error', () => {});
+      watchers.push(w);
+    } catch {
+      /* no file-system events here: polling it is */
+    }
+  }
+  return {
+    wait(ms) {
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          wake = null;
+          resolve();
+        }, ms);
+        wake = () => {
+          clearTimeout(timer);
+          setTimeout(resolve, 20); // let a rename/unlink burst settle
+        };
+      });
+    },
+    close() {
+      for (const w of watchers) {
+        try {
+          w.close();
+        } catch {
+          /* already closed */
+        }
+      }
+    },
+  };
+}
+
 function decodeChunks(chunks) {
   return Buffer.concat(chunks.map(([, b64]) => Buffer.from(b64, 'base64'))).toString('utf8');
 }
@@ -165,7 +222,7 @@ async function run({ opts, argv, ctx }) {
   let fp = cacheable ? fingerprint(fpArgs) : null;
   let key = fp && fp.key;
   const cache = new Cache(paths, config.cache);
-  cache.prune();
+  cache.prune(); // occasional housekeeping
   if (fp) cache.saveLast(fp.key, fp.components);
   if (key) {
     const hit = cache.read(key);
@@ -177,6 +234,17 @@ async function run({ opts, argv, ctx }) {
 
   const queue = new Queue(paths);
   const cap = opts.cap || resolveConcurrency(config);
+  const dynamic = !opts.cap && isAutoConcurrency(config) && config.headroom.enabled;
+  const maxCap = resolveMaxConcurrency(config, cap);
+  const meter = new CpuMeter();
+  const capFn = (runningTickets) => {
+    const e = effectiveCap(cap, config.adaptive);
+    if (e.throttled) return e.cap;
+    if (!dynamic) return cap;
+    const newest = runningTickets.reduce((m, tk) => Math.max(m, tk.startedAt || 0), 0);
+    return growCap({ base: cap, max: maxCap, running: runningTickets, util: meter.sample(), newestStartedAt: newest, now: Date.now(), headroom: config.headroom });
+  };
+  const waker = makeWaker([paths.queueDir, paths.cacheDir]);
   const priority = opts.priority || (process.stdin.isTTY && process.stdout.isTTY ? 'high' : 'normal');
   const me = queue.create(cwd, finalArgv, key, { priority, exclusive: opts.exclusive });
   const logs = new Logs(paths, config.logs);
@@ -189,6 +257,7 @@ async function run({ opts, argv, ctx }) {
     if (cleaned) return;
     cleaned = true;
     clearInterval(hb);
+    waker.close();
     if (child && child.pid) killTree(child.pid, 'SIGTERM');
     if (logWriter) {
       try {
@@ -223,7 +292,7 @@ async function run({ opts, argv, ctx }) {
       }
     }
     const eff = effectiveCap(cap, config.adaptive);
-    const r = queue.tryClaim(me, eff.cap);
+    const r = queue.tryClaim(me, capFn);
     if (r.ok) break;
     if (Date.now() - waitStart > maxWaitMs) {
       cleanup();
@@ -245,7 +314,7 @@ async function run({ opts, argv, ctx }) {
         t('waitLine', {
           pos: r.position,
           running: r.running,
-          cap: eff.cap,
+          cap: r.cap ?? eff.cap,
           elapsed: fmtDur(Date.now() - waitStart),
           who: who ? t('waitAhead', { who }) : '',
         }) + (eff.throttled ? t('throttled', { load: eff.load.toFixed(1) }) : ''),
@@ -253,12 +322,14 @@ async function run({ opts, argv, ctx }) {
       lastPos = r.position;
       lastPrint = Date.now();
     }
-    await sleep(r.following ? FOLLOW_POLL_MS : POLL_MS);
+    await waker.wait(r.following ? FOLLOW_POLL_MS : POLL_MS);
   }
+  waker.close();
   if (Date.now() - waitStart > 2000) log(t('turnCame', { elapsed: fmtDur(Date.now() - waitStart) }));
 
-  // The tree may have changed while we waited, and an identical run may have finished meanwhile.
-  if (cacheable) {
+  // The tree may have changed while we waited, and an identical run may have finished meanwhile. After a
+  // (near-)immediate start there is nothing to re-check; the post-run fingerprint still guards the result.
+  if (cacheable && Date.now() - waitStart > RECHECK_AFTER_MS) {
     fp = fingerprint(fpArgs) || fp;
     key = fp && fp.key;
     const hit = key && cache.read(key);
@@ -404,6 +475,8 @@ module.exports = {
   addChanged,
   addIncremental,
   effectiveCap,
+  growCap,
+  makeWaker,
   wantDigest,
   isWatch,
   isAgentEnv,

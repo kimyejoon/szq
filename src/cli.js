@@ -6,19 +6,42 @@ const cp = require('child_process');
 const pkg = require('../package.json');
 const { t, setLang, detectLang } = require('./i18n');
 const cfgMod = require('./config');
-const { Queue } = require('./queue');
-const { Cache, fingerprint, gitTop } = require('./cache');
-const { Logs } = require('./logs');
-const stats = require('./stats');
-const { diffComponents } = require('./explain');
-const { run, fmtDur, shortCwd, log } = require('./run');
-const { runGuard } = require('./guard');
-const adapters = require('./adapters');
-const installer = require('./adapters/installer');
-const shim = require('./shim');
-const { rulesBlock } = require('./rules');
+// Modules are loaded when a command needs them: the common paths (a cache hit, the guard hook that runs before
+// every shell command) should not pay to parse code they never use.
+const lazy = (load) => {
+  let m;
+  return new Proxy(
+    {},
+    {
+      get: (_, k) => (m || (m = load()))[k],
+    },
+  );
+};
+const queueMod = lazy(() => require('./queue'));
+const cacheMod = lazy(() => require('./cache'));
+const logsMod = lazy(() => require('./logs'));
+const stats = lazy(() => require('./stats'));
+const explainMod = lazy(() => require('./explain'));
+const runMod = lazy(() => require('./run'));
+const guardMod = lazy(() => require('./guard'));
+const adapters = lazy(() => require('./adapters'));
+const installer = lazy(() => require('./adapters/installer'));
+const shim = lazy(() => require('./shim'));
+const rulesMod = lazy(() => require('./rules'));
+const fmtDur = (...a) => runMod.fmtDur(...a);
+const shortCwd = (...a) => runMod.shortCwd(...a);
+const log = (...a) => runMod.log(...a);
+const run = (...a) => runMod.run(...a);
+const runGuard = (...a) => guardMod.runGuard(...a);
+const rulesBlock = (...a) => rulesMod.rulesBlock(...a);
+const diffComponents = (...a) => explainMod.diffComponents(...a);
+const fingerprint = (...a) => cacheMod.fingerprint(...a);
+const gitTop = (...a) => cacheMod.gitTop(...a);
+const Queue = new Proxy(function () {}, { construct: (_, args) => new queueMod.Queue(...args) });
+const Cache = new Proxy(function () {}, { construct: (_, args) => new cacheMod.Cache(...args) });
+const Logs = new Proxy(function () {}, { construct: (_, args) => new logsMod.Logs(...args) });
 
-const HELP = `szq ${pkg.version} - a shared queue, result cache and guard hooks for heavy verification commands
+const helpText = () => `szq ${pkg.version} - a shared queue, result cache and guard hooks for heavy verification commands
 
 Usage
   szq [options] [--] <command...>        run a command through the queue
@@ -71,7 +94,7 @@ async function main(argv = process.argv.slice(2)) {
 
   const args = argv.slice();
   if (args.length === 0 || args[0] === '-h' || args[0] === '--help' || args[0] === 'help') {
-    process.stdout.write(HELP);
+    process.stdout.write(helpText());
     return 0;
   }
   if (args[0] === '-v' || args[0] === '--version' || args[0] === 'version') {
@@ -483,4 +506,4 @@ function cmdDoctor(ctx, loaded) {
   return 0;
 }
 
-module.exports = { main, HELP };
+module.exports = { main, helpText };

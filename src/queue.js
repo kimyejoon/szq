@@ -181,12 +181,16 @@ class Queue {
     return t.key ? live.find((o) => o.key === t.key && o.id < t.id) || null : null;
   }
 
-  /** Decide whether `me` may start now. `cap` is the effective concurrency for this decision. */
-  tryClaim(me, cap) {
+  /**
+   * Decide whether `me` may start now. `capOrFn` is the effective concurrency for this decision - a number, or a
+   * function of the running tickets (evaluated inside the lock, so it sees a consistent view).
+   */
+  tryClaim(me, capOrFn) {
     const res = this.withClaim(() => {
       const tickets = this.reap(this.readTickets());
       const live = tickets.filter((t) => t.state === 'running' || t.state === 'waiting');
       const running = tickets.filter((t) => t.state === 'running');
+      const cap = typeof capOrFn === 'function' ? capOrFn(running) : capOrFn;
       const waiting = tickets.filter((t) => t.state === 'waiting' && !Queue.leaderOf(t, live));
       const mine = tickets.find((t) => t.id === me.t.id);
       if (!mine) {
@@ -199,10 +203,10 @@ class Queue {
       if (admitted.has(me.t.id)) {
         me.t = { ...me.t, state: 'running', startedAt: Date.now() };
         writeJsonAtomic(me.file, me.t);
-        return { ok: true };
+        return { ok: true, cap };
       }
       const idx = order.findIndex((t) => t.id === me.t.id);
-      return { ok: false, position: idx + 1, running: running.length, ahead: running.concat(order.slice(0, idx)) };
+      return { ok: false, cap, position: idx + 1, running: running.length, ahead: running.concat(order.slice(0, idx)) };
     });
     return res || { ok: false, position: 0, running: 0 };
   }

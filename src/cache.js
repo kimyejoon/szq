@@ -27,7 +27,28 @@ function gitText(args, cwd) {
   return r.status === 0 ? r.stdout : null;
 }
 
+/**
+ * Repository root found by walking up to the nearest `.git` (a directory, or a file for worktrees and
+ * submodules) - the same answer as `git rev-parse --show-toplevel` without starting a process (~20-40 ms).
+ * Falls back to git itself when GIT_DIR / GIT_WORK_TREE are in play.
+ */
+function findRepoTop(cwd) {
+  let dir = cwd;
+  for (;;) {
+    try {
+      const st = fs.statSync(path.join(dir, '.git'));
+      if (st.isDirectory() || st.isFile()) return dir;
+    } catch {
+      /* keep walking */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 function gitTop(cwd) {
+  if (!process.env.GIT_DIR && !process.env.GIT_WORK_TREE) return findRepoTop(cwd);
   const out = gitText(['rev-parse', '--show-toplevel'], cwd);
   return out ? out.trim() : null;
 }
@@ -99,16 +120,22 @@ const lp = (s) => `${Buffer.byteLength(s)}:${s}`; // length-prefixed: no field c
  * is not ignored, and - recursively - initialised submodules. Returns null when git cannot answer.
  */
 function hashTree(top, store, prefix, depth) {
-  const tracked = gitText(['ls-files', '-s', '-z'], top);
-  const untracked = gitText(['ls-files', '-o', '--exclude-standard', '-z'], top);
-  if (tracked === null || untracked === null) return null;
+  // ONE process for both lists: `-t` tags every line (H/S/M = tracked, ? = untracked), so a file name can never
+  // be mistaken for the other kind.
+  const listing = gitText(['ls-files', '-t', '-s', '-o', '--exclude-standard', '-z'], top);
+  if (listing === null) return null;
   const entries = new Map(); // path -> isGitlink
-  for (const line of tracked.split('\0')) {
+  const untracked = [];
+  for (const line of listing.split('\0')) {
     if (!line) continue;
-    const m = /^(\d+) [0-9a-f]+ \d+\t([\s\S]+)$/.exec(line);
+    if (line.startsWith('? ')) {
+      untracked.push(line.slice(2));
+      continue;
+    }
+    const m = /^[A-Z] (\d+) [0-9a-f]+ \d+\t([\s\S]+)$/.exec(line);
     if (m) entries.set(m[2], m[1] === '160000');
   }
-  for (const p of untracked.split('\0')) if (p && !entries.has(p)) entries.set(p, false);
+  for (const p of untracked) if (!entries.has(p)) entries.set(p, false);
   if (entries.size > MAX_FILES) return { tooMany: true };
 
   const files = {};
@@ -206,7 +233,9 @@ class Cache {
     }
   }
 
-  prune() {
+  /** Housekeeping is not needed on every call: run it for roughly one call in sixteen. */
+  prune(force = false) {
+    if (!force && Math.random() > 1 / 16) return;
     try {
       for (const n of fs.readdirSync(this.dir)) {
         const f = path.join(this.dir, n);
@@ -250,7 +279,7 @@ class Cache {
   saveLast(key, components) {
     try {
       writeJsonAtomic(this.lastFile(components), { v: 1, at: Date.now(), key, components });
-      const names = fs.readdirSync(this.lastDir);
+      const names = Math.random() < 1 / 16 ? fs.readdirSync(this.lastDir) : [];
       if (names.length > 300) {
         const old = names
           .map((n) => [n, fs.statSync(path.join(this.lastDir, n)).mtimeMs])
@@ -273,4 +302,4 @@ class Cache {
   }
 }
 
-module.exports = { Cache, fingerprint, stateKey, gitTop, gitText, fileHash, StatStore };
+module.exports = { Cache, fingerprint, stateKey, gitTop, findRepoTop, gitText, fileHash, StatStore };

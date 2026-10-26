@@ -7,8 +7,14 @@ const isWin = process.platform === 'win32';
 
 const DEFAULTS = Object.freeze({
   lang: 'auto',
-  // 'auto' = max(1, floor(cpus / 4)); a number pins it.
+  // 'auto' = start with max(1, floor(cpus / 4)) and grow while the machine has CPU headroom (see `headroom`);
+  // a number pins it.
   concurrency: 'auto',
+  // Upper bound of the growth in 'auto' mode: 'auto' = floor(cpus * 0.75), never below the base value.
+  maxConcurrency: 'auto',
+  // In 'auto' mode, admit one more run beyond the base while recent CPU utilisation is below `cpuBelow`
+  // (0..1) and the newest run started at least `settleMs` ago (so its load is already visible).
+  headroom: { enabled: true, cpuBelow: 0.55, settleMs: 800 },
   timeoutSec: 900,
   maxWaitSec: 1800,
   // Kill a run that prints nothing for this long (0 = off). Note: tsc is silent until it finishes.
@@ -100,10 +106,17 @@ function normalize(raw) {
   const adaptive = isPlainObject(r.adaptive) ? r.adaptive : {};
   const output = isPlainObject(r.output) ? r.output : {};
   const logs = isPlainObject(r.logs) ? r.logs : {};
+  const headroom = isPlainObject(r.headroom) ? r.headroom : {};
   const nonNeg = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.floor(Number(v)) : d);
   return {
     lang: typeof r.lang === 'string' ? r.lang : DEFAULTS.lang,
     concurrency: r.concurrency === 'auto' ? 'auto' : posInt(r.concurrency, 'auto'),
+    maxConcurrency: r.maxConcurrency === 'auto' ? 'auto' : posInt(r.maxConcurrency, 'auto'),
+    headroom: {
+      enabled: typeof headroom.enabled === 'boolean' ? headroom.enabled : DEFAULTS.headroom.enabled,
+      cpuBelow: Number(headroom.cpuBelow) > 0 && Number(headroom.cpuBelow) <= 1 ? Number(headroom.cpuBelow) : DEFAULTS.headroom.cpuBelow,
+      settleMs: Number.isFinite(Number(headroom.settleMs)) && Number(headroom.settleMs) >= 0 ? Math.floor(Number(headroom.settleMs)) : DEFAULTS.headroom.settleMs,
+    },
     timeoutSec: posInt(r.timeoutSec, DEFAULTS.timeoutSec),
     maxWaitSec: posInt(r.maxWaitSec, DEFAULTS.maxWaitSec),
     stallSec: nonNeg(r.stallSec, DEFAULTS.stallSec),
@@ -157,6 +170,16 @@ function resolveConcurrency(config, env = process.env, cpus = os.cpus().length) 
   return Math.max(1, Math.floor(cpus / 4));
 }
 
+/** True when the base concurrency is derived (not pinned by --cap, $SZQ_CONCURRENCY or a number in the config). */
+function isAutoConcurrency(config, env = process.env) {
+  return !posInt(env.SZQ_CONCURRENCY, 0) && config.concurrency === 'auto';
+}
+
+function resolveMaxConcurrency(config, base, cpus = os.cpus().length) {
+  const max = config.maxConcurrency === 'auto' ? Math.floor(cpus * 0.75) : config.maxConcurrency;
+  return Math.max(base, max);
+}
+
 /**
  * Create a state directory that only the current user can write to.
  * Refuses directories owned by someone else or writable by group/others (POSIX).
@@ -195,6 +218,8 @@ module.exports = {
   normalize,
   loadConfig,
   resolveConcurrency,
+  isAutoConcurrency,
+  resolveMaxConcurrency,
   ensureDir,
   ensureStateDirs,
   readConfigFile,
