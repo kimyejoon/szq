@@ -184,6 +184,20 @@ Windows). Environment: `SZQ_CONCURRENCY`, `SZQ_HOME` (state directory), `SZQ_CON
 
 ## Benchmarks
 
+Direct comparison against the **tman 0.7.10 release binary**, with equal concurrency and validated results for every
+caller: [bench/TMAN.md](bench/TMAN.md). Reproduce with `npm run bench:tman -- --tman /absolute/path/to/tman`.
+
+On the measured M1 Pro, with eight callers and both tools capped at two concurrent jobs (three-run medians):
+
+| Scenario | tman | szq | speedup |
+|---|---:|---:|---:|
+| Eight different ~2 CPU-second jobs | 13.09 s | 9.20 s | 1.42× |
+| Eight concurrent identical TypeScript checks | 22.32 s | 4.46 s | 5.01× |
+| Eight sequential TypeScript checks after warm-up | 30.23 s | 0.59 s | 51.11× |
+
+All callers received the expected successful result. These are fixed-concurrency results for tman 0.7.10 on macOS;
+the linked report records flags, ranges, background load and raw samples, including the cost excluded by warm-up.
+
 Methodology, profile and before/after numbers: [docs/PERFORMANCE.md](docs/PERFORMANCE.md); raw tables:
 [bench/RESULTS.md](bench/RESULTS.md); reproduce with `npm run bench`. Measured on an Apple M1 Pro (8 cores) that other
 work kept busy, 8 simultaneous "agents":
@@ -208,12 +222,12 @@ more mature in process supervision. Comparison based on each project's public RE
 
 | | szq | [tman](https://github.com/standardbeagle/tman) |
 |---|---|---|
-| Machine-wide queue with a cap | yes (starts at CPUs/4, grows with CPU headroom) | yes (default 2 per queue; admission by expected core/memory cost) |
+| Machine-wide queue with a cap | yes (starts at CPUs/4, grows with CPU headroom) | named queues budget cores/memory; per-command slots default to 2 |
 | Handling of an identical request | **waits and shares the result**; results cached by working-tree content | refuses the duplicate by name (per directory); no result reuse described |
 | Why was it a cache miss? | `szq explain` | not described |
 | Output for agents | `--digest` (head/tail/errors inline + full log path) | run logs and failure digests as files |
 | Hung / runaway runs | timeout; stall and memory limit (opt-in, POSIX) | wall time, stall (default 30 min), CPU/memory culling, kernel-enforced limits on Linux/Windows |
-| Back off when the machine is busy for other reasons | yes (load-aware) | not described |
+| Back off when the machine is busy for other reasons | yes (load-average back-off) | yes, outside load is counted in named-queue admission (0.7.10) |
 | Human-first priority, `--exclusive` | yes, yes | exclusive runs described |
 | Savings report | `szq stats` | not described |
 | Agent integration | deny-with-guidance: Claude Code, Codex, Cursor, Windsurf, Copilot CLI (+ Gemini experimental), PATH shims, rules block | rewrite or gate hooks for Claude Code, Codex, Gemini CLI, opencode, Cursor, Antigravity, Kimi Code CLI, Copilot CLI; shims for others |

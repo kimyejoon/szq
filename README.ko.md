@@ -182,6 +182,20 @@ szq stats                       # 캐시와 공유로 아낀 작업량
 
 ## 벤치마크
 
+**tman 0.7.10 릴리스 바이너리**와 동시 실행 수를 맞추고 모든 호출의 결과를 검증한 직접 비교는
+[bench/TMAN.md](bench/TMAN.md)에 있습니다. `npm run bench:tman -- --tman /absolute/path/to/tman`으로 재현합니다.
+
+M1 Pro에서 요청 8개, 양쪽 동시 실행 상한 2개, 3회 중앙값입니다.
+
+| 시나리오 | tman | szq | 속도 비율 |
+|---|---:|---:|---:|
+| 서로 다른 약 2 CPU초 작업 8개 | 13.09초 | 9.20초 | 1.42배 |
+| 같은 TypeScript 검사 8개 동시 요청 | 22.32초 | 4.46초 | 5.01배 |
+| 준비 실행 후 같은 TypeScript 검사 8회 순차 반복 | 30.23초 | 0.59초 | 51.11배 |
+
+모든 호출이 올바른 성공 결과를 받았습니다. macOS의 tman 0.7.10과 고정 동시성으로 비교한 결과이며,
+보고서에 옵션·측정 범위·배경 부하·원자료와 준비 실행에서 제외한 비용을 함께 기록했습니다.
+
 방법, 프로파일, 개선 전후 숫자는 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)에, 원 데이터는
 [bench/RESULTS.md](bench/RESULTS.md)에 있고 `npm run bench`로 재현합니다. 다른 작업으로 바쁜 Apple M1 Pro(8코어)에서
 "에이전트" 8개를 동시에 돌린 결과입니다.
@@ -205,12 +219,12 @@ szq가 이 문제를 처음 다룬 도구는 아닙니다. 특히 [tman](https:/
 
 | | szq | [tman](https://github.com/standardbeagle/tman) |
 |---|---|---|
-| 동시 실행 수가 제한된 머신 공용 큐 | 예 (CPU/4로 시작, CPU 여유에 따라 증가) | 예 (큐당 기본 2, 예상 코어·메모리 비용 기준 입장) |
+| 동시 실행 수가 제한된 머신 공용 큐 | 예 (CPU/4로 시작, CPU 여유에 따라 증가) | 이름 있는 큐는 코어·메모리 기준, 명령별 슬롯은 기본 2개 |
 | 같은 요청 처리 | **기다렸다가 결과 공유**, 작업 트리 내용 기준 캐시 | 이름 기준으로(디렉터리별) 중복 실행 거부, 결과 재사용은 언급 없음 |
 | 캐시 미스 이유 | `szq explain` | 언급 없음 |
 | 에이전트용 출력 | `--digest`(머리·꼬리·오류를 인라인으로 + 전체 로그 경로) | 실행 로그와 실패 요약(파일) |
 | 멈추거나 폭주하는 실행 | 타임아웃, 멈춤·메모리 한도(선택, POSIX) | 실행 시간, 멈춤(기본 30분), CPU·메모리 정리, Linux/Windows 커널 강제 한도 |
-| 다른 이유로 머신이 바쁠 때 물러나기 | 예 (부하 적응) | 언급 없음 |
+| 다른 이유로 머신이 바쁠 때 물러나기 | 예 (load average 기반) | 예, 이름 있는 큐의 입장 판정에 외부 부하 반영(0.7.10) |
 | 사람 우선순위, `--exclusive` | 예, 예 | 배타 실행 언급 |
 | 절감 리포트 | `szq stats` | 언급 없음 |
 | 에이전트 연동 | 안내하며 거부: Claude Code, Codex, Cursor, Windsurf, Copilot CLI(+Gemini 실험적), PATH 심, 규칙 블록 | Claude Code·Codex·Gemini CLI·opencode·Cursor·Antigravity·Kimi Code CLI·Copilot CLI용 재작성/차단 훅, 그 외는 심 |

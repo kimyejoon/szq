@@ -23,13 +23,15 @@ conservative default), admission by expected core/memory cost, a single prebuilt
   `szq stats` how much work this saved);
 - `--digest` prints the head, tail and error lines of long output *in place of* the full text, keeps the full log, and
   the hook tells the agent to use it (tman writes run logs and failure digests to files);
-- it backs off when the machine is busy for reasons outside the queue, lets a human at a terminal go first, and the
+- it uses load-average back-off, lets a human at a terminal go first, and the
   hooks *deny with an explanation* so the agent learns to prefix `szq` itself;
 - it is a dependency-free Node package you can read in an afternoon.
 
 szq has **no** CPU limits, no kernel-enforced memory limits, no cost-based admission, and its stall/memory
 supervision is opt-in and POSIX-only. As far as tman's README describes, it does not cache results or look at git
-state, and does not mention load-aware back-off - verify that yourself before relying on this comparison.
+state. tman 0.7.10 also accounts for outside load in named-queue admission
+([Admission.cs](https://github.com/standardbeagle/tman/blob/v0.7.10/Admission.cs)); the earlier comparison understated
+this. A direct fixed-concurrency comparison is in [bench/TMAN.md](../bench/TMAN.md).
 
 ## tdd-cli ([geuben/tdd-cli](https://github.com/geuben/tdd-cli))
 

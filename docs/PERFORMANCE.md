@@ -1,5 +1,8 @@
 # Performance
 
+For a direct comparison against the tman 0.7.10 release binary, including real TypeScript checks and all raw samples,
+see [bench/TMAN.md](../bench/TMAN.md). The measurements below are the earlier szq-versus-unsupervised baseline.
+
 What szq costs per call, what was optimised and how it was measured. All numbers: Apple M1 Pro (8 cores, 16 GiB),
 Node 22, macOS, **on a laptop that other work kept busy** (background CPU 21-65%, load average 7-25 during the
 runs). They show orders of magnitude and the effect of changes, not what your machine will do. Reproduce with
@@ -25,7 +28,7 @@ So **a call was dominated by starting `git` three times**; everything szq does i
 |---|---|
 | Repository root found by walking up to `.git` (no process) | -1 git process |
 | One `git ls-files -t -s -o --exclude-standard -z` instead of two (`-t` tags each line, so file names cannot pose as the other kind) | -1 git process |
-| No second fingerprint after a (near-)immediate start; the post-run fingerprint still guards the result | -1 fingerprint per run |
+| No second fingerprint for an immediate execution with no intervening cache result; queued results are revalidated | -1 fingerprint for the uncontended execution path |
 | Waiters are woken by file-system events (`fs.watch` on the queue and cache directories) instead of waiting out a 1 s poll; followers poll every 250 ms | up to 1 s less latency when a slot frees |
 | Idle-aware concurrency: in `auto` mode one or more runs beyond the base are admitted while recent CPU utilisation is below `headroom.cpuBelow` | distinct commands finish sooner on a machine with headroom |
 | Liveness of other runs: a live pid with a fresh heartbeat needs no `ps`; start-time checks only for quiet tickets | no more `ps` storm with many waiters |

@@ -155,7 +155,8 @@ function freshEnv() {
   const configFile = path.join(home, 'config.json');
   if (SZQ_CONFIG) fs.writeFileSync(configFile, SZQ_CONFIG);
   const env = { ...process.env, SZQ_HOME: home, SZQ_CONFIG: configFile, SZQ_LANG: 'en' };
-  delete env.CLAUDECODE;
+  // A benchmark launched through the machine-wide verification queue must exercise szq, not pass through it.
+  for (const k of ['SZQ_ACTIVE', 'SZQ_CONCURRENCY', 'CLAUDECODE', 'SZQ_AGENT']) delete env[k];
   return { home, env };
 }
 

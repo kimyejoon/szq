@@ -1,0 +1,348 @@
+{
+  "date": "2026-10-26T11:17:48.204Z",
+  "node": "v20.11.0",
+  "tman": "tman 0.7.10",
+  "sourceDigest": "6f3c0cf48fb2df601869fd50f9c2a33e85f48758d4bf31cb68d168eff89da3ff",
+  "tmanBinarySha256": "9cf0c3aab68c232b91fe5dd9b87caac22e1f86d4470cb2d7af16be8a60ca5514",
+  "machine": {
+    "model": "Apple M1 Pro",
+    "cpus": 8,
+    "platform": "darwin",
+    "arch": "arm64"
+  },
+  "rounds": 3,
+  "agents": 8,
+  "cap": 2,
+  "cpuMs": 2000,
+  "iterations": 25276927,
+  "tscVersion": "Version 5.9.3",
+  "method": "Alternating tool order; fresh repositories/state per sample; equal fixed cap; tman --no-queue --max-parallel; szq adaptive disabled; all callers must exit 0 and receive the expected output.",
+  "samples": [
+    {
+      "scenario": "distinct-concurrent",
+      "round": 0,
+      "tool": "tman",
+      "wallMs": 13068.567083999998,
+      "responseMedianMs": 7548.6688335,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16276.758,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.578125,
+        8.634765625,
+        8.341796875
+      ]
+    },
+    {
+      "scenario": "distinct-concurrent",
+      "round": 0,
+      "tool": "szq",
+      "wallMs": 9203.8495,
+      "responseMedianMs": 5891.870166999999,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16330.112,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        9.140625,
+        8.76416015625,
+        8.392578125
+      ]
+    },
+    {
+      "scenario": "distinct-concurrent",
+      "round": 1,
+      "tool": "szq",
+      "wallMs": 8987.047000000002,
+      "responseMedianMs": 5572.7506875,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16170.206,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.888671875,
+        8.71826171875,
+        8.37841796875
+      ]
+    },
+    {
+      "scenario": "distinct-concurrent",
+      "round": 1,
+      "tool": "tman",
+      "wallMs": 13087.369625,
+      "responseMedianMs": 8558.382187000003,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16111.673999999999,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.732421875,
+        8.693359375,
+        8.37353515625
+      ]
+    },
+    {
+      "scenario": "distinct-concurrent",
+      "round": 2,
+      "tool": "tman",
+      "wallMs": 14060.325709000004,
+      "responseMedianMs": 7540.396500499999,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16380.289999999999,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.859375,
+        8.7109375,
+        8.3837890625
+      ]
+    },
+    {
+      "scenario": "distinct-concurrent",
+      "round": 2,
+      "tool": "szq",
+      "wallMs": 9680.849999999999,
+      "responseMedianMs": 5972.754728499996,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": 16497.16,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.24365234375,
+        8.578125,
+        8.34130859375
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 0,
+      "tool": "tman",
+      "wallMs": 40943.495666999996,
+      "responseMedianMs": 19316.197021500004,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        8.138671875,
+        8.54248046875,
+        8.3310546875
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 0,
+      "tool": "szq",
+      "wallMs": 4686.070458000002,
+      "responseMedianMs": 4685.2473119999995,
+      "executions": 1,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 7,
+      "load": [
+        36.51416015625,
+        15.37060546875,
+        10.814453125
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 1,
+      "tool": "szq",
+      "wallMs": 4456.578125,
+      "responseMedianMs": 4452.490208499992,
+      "executions": 1,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 7,
+      "load": [
+        36.47265625,
+        15.712890625,
+        10.9619140625
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 1,
+      "tool": "tman",
+      "wallMs": 22321.504042,
+      "responseMedianMs": 15147.317271000007,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        33.8720703125,
+        15.51806640625,
+        10.9208984375
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 2,
+      "tool": "tman",
+      "wallMs": 21135.951,
+      "responseMedianMs": 12120.16385350001,
+      "executions": 8,
+      "maxParallel": 2,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        30.5439453125,
+        16.00341796875,
+        11.20458984375
+      ]
+    },
+    {
+      "scenario": "same-tsc",
+      "round": 2,
+      "tool": "szq",
+      "wallMs": 4070.8851250000007,
+      "responseMedianMs": 4070.178812500002,
+      "executions": 1,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 7,
+      "load": [
+        22.9814453125,
+        15.43017578125,
+        11.13818359375
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 0,
+      "tool": "tman",
+      "wallMs": 30225.579375,
+      "responseMedianMs": 3523.605416499995,
+      "executions": 8,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        22.26220703125,
+        15.40625,
+        11.15478515625
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 0,
+      "tool": "szq",
+      "wallMs": 638.0850420000206,
+      "responseMedianMs": 76.54504149999411,
+      "executions": 0,
+      "maxParallel": 0,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 8,
+      "load": [
+        15.3134765625,
+        14.42724609375,
+        10.96826171875
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 1,
+      "tool": "szq",
+      "wallMs": 589.9869999999937,
+      "responseMedianMs": 73.17966649998561,
+      "executions": 0,
+      "maxParallel": 0,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 8,
+      "load": [
+        14.8076171875,
+        14.3369140625,
+        10.95654296875
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 1,
+      "tool": "tman",
+      "wallMs": 30213.804458999977,
+      "responseMedianMs": 4019.2948329999927,
+      "executions": 8,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        15.54345703125,
+        14.4970703125,
+        11.03271484375
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 2,
+      "tool": "tman",
+      "wallMs": 32238.30462499999,
+      "responseMedianMs": 4029.383833500018,
+      "executions": 8,
+      "maxParallel": 1,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 0,
+      "load": [
+        11.07373046875,
+        13.4931640625,
+        10.8056640625
+      ]
+    },
+    {
+      "scenario": "warm-tsc",
+      "round": 2,
+      "tool": "szq",
+      "wallMs": 591.3970829999889,
+      "responseMedianMs": 73.65683349999017,
+      "executions": 0,
+      "maxParallel": 0,
+      "cpuMs": null,
+      "responses": 8,
+      "shared": 8,
+      "load": [
+        9.0888671875,
+        12.763671875,
+        10.6494140625
+      ]
+    }
+  ],
+  "summary": [
+    {
+      "scenario": "distinct-concurrent",
+      "tmanMedianMs": 13087.369625,
+      "szqMedianMs": 9203.8495,
+      "speedup": 1.4219452007554012
+    },
+    {
+      "scenario": "same-tsc",
+      "tmanMedianMs": 22321.504042,
+      "szqMedianMs": 4456.578125,
+      "speedup": 5.008664364433194
+    },
+    {
+      "scenario": "warm-tsc",
+      "tmanMedianMs": 30225.579375,
+      "szqMedianMs": 591.3970829999889,
+      "speedup": 51.10877318108207
+    }
+  ]
+}

@@ -17,7 +17,6 @@ const { CpuMeter } = require('./cpu');
 const HEARTBEAT_MS = 5000;
 const POLL_MS = 500; // safety net: waiters are normally woken by file-system events (see makeWaker)
 const FOLLOW_POLL_MS = 250; // followers only read a cache file, so they can look more often
-const RECHECK_AFTER_MS = 500; // re-fingerprint after waiting only if we waited this long
 const WATCHDOG_MS = 2000;
 const MEM_CHECK_MS = Number(process.env.SZQ_MEM_INTERVAL_MS) > 0 ? Number(process.env.SZQ_MEM_INTERVAL_MS) : 5000; // overridable for tests
 
@@ -297,18 +296,53 @@ async function run({ opts, argv, ctx }) {
     const maxWaitMs = (opts.maxWait || config.maxWaitSec) * 1000;
     let lastPos = -1;
     let lastPrint = 0;
+    let waited = false;
+    const refreshRequest = () => {
+      fp = fingerprint(fpArgs); // failure means uncacheable, never reuse an old fingerprint
+      key = fp && fp.key;
+      if (fp) cache.saveLast(fp.key, fp.components);
+      if (key === me.t.key) return false;
+      // A changed request must compete for admission under its new key: another caller may already run it.
+      queue.update(me, { key, state: 'waiting', startedAt: undefined });
+      return true;
+    };
+    const share = (hit) => {
+      cleanup();
+      stats.record(paths.statsFile, { k: 'share', cmd: cmdName, saved: hit.ms || 0, waited: Date.now() - waitStart });
+      return replay(hit, t('cacheHitWaited'), ctx, digestOn);
+    };
     for (;;) {
+      if (Date.now() - waitStart > maxWaitMs) {
+        log(t('waitTimeout', { elapsed: fmtDur(maxWaitMs) }));
+        return 75;
+      }
       if (key) {
-        const hit = cache.read(key);
+        let hit = cache.read(key);
         if (hit) {
-          cleanup();
-          stats.record(paths.statsFile, { k: 'share', cmd: cmdName, saved: hit.ms || 0, waited: Date.now() - waitStart });
-          return replay(hit, t('cacheHitWaited'), ctx, digestOn);
+          // Do not hash on every poll. Revalidate when a result actually becomes available.
+          // Ticket creation itself can take time (process identity lookup), even before the first wait.
+          refreshRequest();
+          waited = false;
+          hit = key && cache.read(key);
+          if (hit) return share(hit);
         }
       }
       const eff = effectiveCap(cap, config.adaptive);
       const r = queue.tryClaim(me, capFn);
-      if (r.ok) break;
+      if (r.ok) {
+        // A leader can publish its result and release its ticket between our lookup and this claim.
+        // Always check again, even for an immediate admission. A queued run must also use today's tree.
+        let hit = key && cache.read(key);
+        if (cacheable && (waited || hit)) {
+          const changed = refreshRequest();
+          waited = false;
+          hit = key && cache.read(key);
+          if (hit) return share(hit);
+          if (changed) continue;
+        }
+        if (hit) return share(hit);
+        break;
+      }
       if (Date.now() - waitStart > maxWaitMs) {
         cleanup();
         log(t('waitTimeout', { elapsed: fmtDur(maxWaitMs) }));
@@ -338,24 +372,10 @@ async function run({ opts, argv, ctx }) {
         lastPrint = Date.now();
       }
       await waker.wait(r.following ? FOLLOW_POLL_MS : POLL_MS);
+      waited = true;
     }
     waker.close();
     if (Date.now() - waitStart > 2000) log(t('turnCame', { elapsed: fmtDur(Date.now() - waitStart) }));
-
-    // The tree may have changed while we waited, and an identical run may have finished meanwhile. After a
-    // (near-)immediate start there is nothing to re-check; the post-run fingerprint still guards the result.
-    if (cacheable && Date.now() - waitStart > RECHECK_AFTER_MS) {
-      fp = fingerprint(fpArgs) || fp;
-      key = fp && fp.key;
-      const hit = key && cache.read(key);
-      if (hit) {
-        cleanup();
-        const waited = Date.now() - waitStart;
-        stats.record(paths.statsFile, { k: waited > 2000 ? 'share' : 'hit', cmd: cmdName, saved: hit.ms || 0, waited });
-        return replay(hit, waited > 2000 ? t('cacheHitWaited') : t('cacheHit'), ctx, digestOn);
-      }
-      if (fp) cache.saveLast(fp.key, fp.components);
-    }
 
     // ---- run ----
     const env = stripShimDirs({ ...process.env, SZQ_ACTIVE: '1' }, paths);

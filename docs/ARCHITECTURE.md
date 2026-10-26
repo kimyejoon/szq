@@ -113,6 +113,12 @@ otherwise the oldest waiting ticket leads. The rest *follow*: they take no slot,
 replay the leader's result when it appears in the cache. If the leader disappears without a cacheable result (killed,
 timed out, stalled, tree changed, output too large) the next follower becomes leader and runs the command.
 
+After entering the queue, a cache result is revalidated against the current tree before replay. A successful slot
+claim checks the cache again, closing the race where the leader published and removed its ticket after our lookup.
+After waiting, the fingerprint is refreshed before execution. If its key changed, the ticket returns to `waiting`
+with the new key and competes for admission again; an unavailable fingerprint clears the key instead of retaining
+an old one. Polls without a result do not hash the tree, and an initial cache hit still takes one fingerprint.
+
 ## Cache entries
 
 ```json

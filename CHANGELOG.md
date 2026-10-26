@@ -31,11 +31,17 @@ First public version.
 - English and Korean CLI messages and documentation; benchmarks (`npm run bench`).
 
 ### Fixed
+- Close the cache-lookup/slot-claim race so a just-completed request is shared rather than executed twice.
+- Revalidate queued cache results and refresh a waited request before execution; changed requests re-enter admission
+  under their new key, and fingerprint failures clear the old sharing key. Five deterministic regression tests.
+- Benchmarks launched through another szq now clear the nested-run marker in their isolated child environments.
 - Under heavy load identical concurrent requests could occasionally execute twice: leader election trusted the ticket
   id order, but a ticket file can become visible later than its id suggests. A running ticket with the same key now wins
   whatever the arrival order. Regression and stress tests added.
 
 ### Performance
+- Add a reproducible tman release-binary comparison with equal concurrency, alternating tool order, real TypeScript
+  checks, response validation, execution counts, source/binary hashes and raw samples. See [bench/TMAN.md](bench/TMAN.md).
 - A cache hit takes ~0.07 s instead of ~0.13 s: the repository root is found without starting git, one `git ls-files`
   replaces two, the post-wait fingerprint is skipped after an immediate start, housekeeping is occasional, modules load
   lazily. Waiters are woken by file-system events instead of a 1 s poll. Idle-aware concurrency admits more runs while
