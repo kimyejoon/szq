@@ -12,6 +12,9 @@
 
 ---
 
+<img width="1672" height="941" alt="szq-thumbnail" src="https://github.com/user-attachments/assets/8144b84c-f558-469d-9aaa-c2c13b5b459b" />
+
+
 Running Claude Code, Codex, and Cursor side by side is great—until every agent runs the same `tsc`, `vitest`, or `jest` command at once. Your fans spin up, your development server struggles, and thousands of log lines consume the agents' context windows.
 
 **szq** is a lightweight, zero-dependency Node.js CLI that coordinates expensive checks **across sessions on the same machine**. No daemon to configure, no changes to your test runner, and no need to give up working in parallel.
