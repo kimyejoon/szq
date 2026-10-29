@@ -130,7 +130,7 @@ function install(adapter, opts = {}) {
   const command = hookCommand(adapter.id, { ...opts, absoluteNode });
   adapter.apply(doc, command);
   const changed = JSON.stringify(doc) !== before;
-  const notes = adapter.notes ? adapter.notes({ ...opts, file }) : [];
+  const notes = adapter.notes ? adapter.notes({ scope: 'user', home: os.homedir(), cwd: process.cwd(), ...opts, file }) : [];
   if (opts.dryRun || !changed) return { file, changed, backup: null, notes, preview: `${JSON.stringify(doc, null, 2)}\n`, command };
   const backup = existed ? backupFile(file) : null;
   writeJsonAtomic(file, doc, mode);
