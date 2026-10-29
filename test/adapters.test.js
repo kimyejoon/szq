@@ -119,6 +119,23 @@ test('--dry-run writes nothing', () => {
   assert.equal(fs.existsSync(r.file), false);
 });
 
+test('install without home/cwd (as the CLI calls it) falls back to the user home for notes', () => {
+  const home = tmpDir();
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    const r = installer.install(adapters.get('codex'), { scope: 'user', dryRun: true });
+    assert.equal(r.file, path.join(home, '.codex', 'hooks.json'));
+    assert.ok(r.notes.length >= 1);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test('project scope targets the project directory', () => {
   const dir = tmpDir();
   assert.equal(adapters.get('claude-code').target({ scope: 'project', home: '/h', cwd: dir }), path.join(dir, '.claude', 'settings.json'));
