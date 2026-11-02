@@ -99,7 +99,10 @@ records `pid`, `host`, the owner's start time, `cwd`, the command line, the requ
   while recent whole-machine CPU utilisation is below `headroom.cpuBelow` and the newest run started at least
   `headroom.settleMs` ago (so its load is visible); each running run is assumed to use `utilisation / running` of the
   machine, at most +3 per decision, never above `maxConcurrency`. While the 1-minute load average exceeds
-  `adaptive.loadPerCpu` x CPUs the cap for new starts is 1 (never 0, so a busy machine cannot starve the queue). The
+  `adaptive.loadPerCpu` x CPUs, or (Linux) memory is short - `/proc/pressure/memory` "some avg10" above
+  `adaptive.memPressurePct` or `MemAvailable` below `adaptive.memAvailPct` percent of `MemTotal` - the cap for new
+  starts is 1 (never 0, so a busy machine cannot starve the queue). Memory matters separately from load: a type check
+  adds a GiB or more, and starting one on a machine that is already swapping slows every other run down. The
   cap is evaluated inside the queue lock, on a consistent list of running tickets.
 - **Waiting.** A waiter sleeps until a file-system event in the queue or cache directory (`fs.watch`) or at most 500 ms
   (followers 250 ms), re-checking the cache each time, printing the queue position when it changes or every 30 s.

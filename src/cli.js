@@ -28,6 +28,7 @@ const adapters = lazy(() => require('./adapters'));
 const installer = lazy(() => require('./adapters/installer'));
 const shim = lazy(() => require('./shim'));
 const rulesMod = lazy(() => require('./rules'));
+const memMod = lazy(() => require('./mem'));
 const fmtDur = (...a) => runMod.fmtDur(...a);
 const shortCwd = (...a) => runMod.shortCwd(...a);
 const log = (...a) => runMod.log(...a);
@@ -205,12 +206,14 @@ function cmdStatus(ctx, args) {
   const snap = queue.snapshot();
   const cap = cfgMod.resolveConcurrency(ctx.config);
   const cacheCount = new Cache(ctx.paths, ctx.config.cache).count();
+  const mem = memMod.readMemSignal();
   if (args.includes('--json')) {
     const slim = (tk) => ({ pid: tk.pid, cwd: tk.cwd, cmd: tk.cmd, since: tk.startedAt || tk.createdAt, exclusive: Boolean(tk.exclusive), priority: tk.prio });
     out(
       JSON.stringify({
         concurrency: cap,
         load: os.loadavg(),
+        mem,
         cacheEntries: cacheCount,
         running: snap.running.map(slim),
         waiting: snap.waiting.map(slim),
@@ -230,7 +233,7 @@ function cmdStatus(ctx, args) {
         .loadavg()
         .map((n) => n.toFixed(1))
         .join(' '),
-    }),
+    }) + (memMod.fmtMem(mem) ? t('statusMem', { mem: memMod.fmtMem(mem) }) : ''),
   );
   const line = (tk, label) =>
     out(`${label}  pid ${tk.pid}  ${fmtDur(Date.now() - (tk.startedAt || tk.createdAt))}  ${shortCwd(tk.cwd)}  $ ${tk.cmd}${tk.exclusive ? '  [exclusive]' : ''}`);
@@ -494,7 +497,14 @@ function cmdDoctor(ctx, loaded) {
     row('state perms', `PROBLEM: ${e.message}`);
   }
   row('config', `${ctx.paths.configFile}${fs.existsSync(ctx.paths.configFile) ? '' : ' (not present, defaults)'}${loaded.error ? ` ! ${loaded.error.message}` : ''}`);
-  row('concurrency', `${cfgMod.resolveConcurrency(ctx.config)} (cpus ${os.cpus().length}${ctx.config.adaptive.enabled ? `, backs off above load ${ctx.config.adaptive.loadPerCpu}/cpu` : ''})`);
+  const ad = ctx.config.adaptive;
+  const memOn = process.platform === 'linux' && (ad.memPressurePct > 0 || ad.memAvailPct > 0);
+  row('concurrency', `${cfgMod.resolveConcurrency(ctx.config)} (cpus ${os.cpus().length}${ad.enabled ? `, backs off above load ${ad.loadPerCpu}/cpu` : ''})`);
+  if (ad.enabled && memOn) {
+    const limits = [ad.memAvailPct > 0 ? `avail < ${ad.memAvailPct}%` : '', ad.memPressurePct > 0 ? `psi > ${ad.memPressurePct}%` : ''].filter(Boolean).join(' or ');
+    const now = memMod.fmtMem(memMod.readMemSignal());
+    row('memory', `backs off when ${limits}${now ? ` (now ${now})` : ''}`);
+  }
   row('guarded', `${ctx.config.guard.commands.join(', ')} | scripts: ${ctx.config.guard.scripts.join(', ')}`);
   row('DISABLE file', fs.existsSync(ctx.paths.disableFile) ? 'PRESENT - guard hooks allow direct runs' : 'absent');
   for (const a of adapters.list()) {

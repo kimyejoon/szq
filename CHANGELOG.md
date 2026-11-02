@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Memory-aware backoff** (Linux): the adaptive cap also drops to 1 while memory is short - PSI `some avg10` above
+  `adaptive.memPressurePct` (default 10) or `MemAvailable` below `adaptive.memAvailPct` percent (default 10). Waiters
+  show `[throttled: low memory, ...]`; `szq status` and `szq doctor` report the current memory signal.
+
 ## [0.1.0] - unreleased
 
 First public version.
