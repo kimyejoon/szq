@@ -13,6 +13,7 @@ const stats = require('./stats');
 const { killTree, buildInvocation, resolveLocalBin, groupRssKiB, procStart, sleepSync, isWin } = require('./platform');
 const { resolveConcurrency, resolveMaxConcurrency, isAutoConcurrency, ensureStateDirs } = require('./config');
 const { CpuMeter } = require('./cpu');
+const { readMemSignal, memPressured, fmtMem } = require('./mem');
 
 const HEARTBEAT_MS = 5000;
 const POLL_MS = 500; // safety net: waiters are normally woken by file-system events (see makeWaker)
@@ -106,11 +107,17 @@ function addChanged(argv, ref) {
   return argv;
 }
 
-/** Fewer parallel runs while the machine is busy for reasons outside the queue (never below 1). */
-function effectiveCap(cap, adaptive, loadavg = os.loadavg(), cpus = os.cpus().length) {
-  if (!adaptive.enabled || isWin || cap <= 1) return { cap, throttled: false, load: loadavg[0] };
-  const throttled = loadavg[0] / cpus > adaptive.loadPerCpu;
-  return { cap: throttled ? 1 : cap, throttled, load: loadavg[0] };
+/**
+ * Fewer parallel runs while the machine is busy for reasons outside the queue (never below 1): either the load average
+ * is high or memory is short (each tsc/vitest adds a GiB or more; starting one on a swapping machine makes it worse).
+ * `why` is 'load', 'memory' or null.
+ */
+function effectiveCap(cap, adaptive, loadavg = os.loadavg(), cpus = os.cpus().length, mem = undefined) {
+  if (!adaptive.enabled || isWin || cap <= 1) return { cap, throttled: false, load: loadavg[0], why: null };
+  if (loadavg[0] / cpus > adaptive.loadPerCpu) return { cap: 1, throttled: true, load: loadavg[0], why: 'load' };
+  const m = mem === undefined ? readMemSignal() : mem;
+  if (memPressured(m, adaptive)) return { cap: 1, throttled: true, load: loadavg[0], why: 'memory', mem: m };
+  return { cap, throttled: false, load: loadavg[0], why: null };
 }
 
 /**
@@ -366,7 +373,9 @@ async function run({ opts, argv, ctx }) {
             cap: r.cap ?? eff.cap,
             elapsed: fmtDur(Date.now() - waitStart),
             who: who ? t('waitAhead', { who }) : '',
-          }) + (eff.throttled ? t('throttled', { load: eff.load.toFixed(1) }) : ''),
+          }) +
+            (eff.why === 'load' ? t('throttled', { load: eff.load.toFixed(1) }) : '') +
+            (eff.why === 'memory' ? t('throttledMem', { mem: fmtMem(eff.mem) }) : ''),
         );
         lastPos = r.position;
         lastPrint = Date.now();

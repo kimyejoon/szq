@@ -202,7 +202,7 @@ anything goes wrong it allows the command.
   "maxWaitSec": 1800,
   "stallSec": 0,
   "maxMemMB": 0,
-  "adaptive": { "enabled": true, "loadPerCpu": 1.5 },
+  "adaptive": { "enabled": true, "loadPerCpu": 1.5, "memPressurePct": 10, "memAvailPct": 10 },
   "output": { "digest": "auto", "maxLines": 200, "head": 15, "tail": 40 },
   "logs": { "keep": 50 },
   "cache": { "enabled": true, "successTtlHours": 24, "failureTtlMinutes": 10, "maxEntryMB": 4, "env": [], "extraFiles": [] },
@@ -215,8 +215,9 @@ anything goes wrong it allows the command.
 `concurrency: "auto"` starts with CPUs / 4 and admits more runs (up to `maxConcurrency`, default 75% of the CPUs) while
 recent CPU utilisation is below `headroom.cpuBelow`; a number pins it. `guard.commands` / `guard.scripts` decide what
 the hook blocks (add `pytest`, `eslint`, `check`...). `adaptive` lowers
-the effective concurrency to 1 while the 1-minute load average exceeds `loadPerCpu` x CPUs (not available on
-Windows). Environment: `SZQ_CONCURRENCY`, `SZQ_HOME` (state directory), `SZQ_CONFIG`, `SZQ_LANG` (`en`|`ko`),
+the effective concurrency to 1 while the 1-minute load average exceeds `loadPerCpu` x CPUs, or - on Linux - while
+memory is short: PSI `some avg10` above `memPressurePct` or `MemAvailable` below `memAvailPct` percent (`0` turns a
+check off; not available on Windows). Environment: `SZQ_CONCURRENCY`, `SZQ_HOME` (state directory), `SZQ_CONFIG`, `SZQ_LANG` (`en`|`ko`),
 `SZQ_CACHE_SALT`, `SZQ_AGENT=1` (treat this shell as an agent). Human kill switch: create an empty file named
 `DISABLE` in the state directory and the hooks allow everything.
 

@@ -21,8 +21,9 @@ const DEFAULTS = Object.freeze({
   stallSec: 0,
   // Kill a run whose process tree exceeds this resident memory (0 = off, POSIX only).
   maxMemMB: 0,
-  // Back off when the machine is already busy for reasons outside the queue.
-  adaptive: { enabled: true, loadPerCpu: 1.5 },
+  // Back off when the machine is already busy for reasons outside the queue: load average above `loadPerCpu` x CPUs,
+  // or (Linux) memory pressure - PSI "some avg10" above `memPressurePct` or MemAvailable below `memAvailPct` (0 = off).
+  adaptive: { enabled: true, loadPerCpu: 1.5, memPressurePct: 10, memAvailPct: 10 },
   // 'auto' = digest when stdout is not a terminal AND an agent environment is detected.
   output: { digest: 'auto', maxLines: 200, head: 15, tail: 40 },
   logs: { keep: 50 },
@@ -108,6 +109,7 @@ function normalize(raw) {
   const logs = isPlainObject(r.logs) ? r.logs : {};
   const headroom = isPlainObject(r.headroom) ? r.headroom : {};
   const nonNeg = (v, d) => (Number.isFinite(Number(v)) && Number(v) >= 0 ? Math.floor(Number(v)) : d);
+  const pct = (v, d) => (v !== null && v !== '' && Number.isFinite(Number(v)) && Number(v) >= 0 && Number(v) <= 100 ? Number(v) : d);
   return {
     lang: typeof r.lang === 'string' ? r.lang : DEFAULTS.lang,
     concurrency: r.concurrency === 'auto' ? 'auto' : posInt(r.concurrency, 'auto'),
@@ -124,6 +126,8 @@ function normalize(raw) {
     adaptive: {
       enabled: typeof adaptive.enabled === 'boolean' ? adaptive.enabled : DEFAULTS.adaptive.enabled,
       loadPerCpu: Number(adaptive.loadPerCpu) > 0 ? Number(adaptive.loadPerCpu) : DEFAULTS.adaptive.loadPerCpu,
+      memPressurePct: pct(adaptive.memPressurePct, DEFAULTS.adaptive.memPressurePct),
+      memAvailPct: pct(adaptive.memAvailPct, DEFAULTS.adaptive.memAvailPct),
     },
     output: {
       digest: ['auto', 'always', 'never'].includes(output.digest) ? output.digest : DEFAULTS.output.digest,

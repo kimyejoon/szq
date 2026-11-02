@@ -38,12 +38,46 @@ test('admit: an exclusive run needs an empty machine and blocks everyone behind 
 // ---------- helpers that are pure ----------
 
 test('effectiveCap backs off to 1 when the machine is busy, never below 1, never on a single slot', () => {
-  const adaptive = { enabled: true, loadPerCpu: 1.5 };
-  assert.deepEqual(run.effectiveCap(4, adaptive, [2, 0, 0], 8), { cap: 4, throttled: false, load: 2 });
-  const busy = run.effectiveCap(4, adaptive, [40, 0, 0], 8);
+  const adaptive = { enabled: true, loadPerCpu: 1.5, memPressurePct: 10, memAvailPct: 10 };
+  const calm = { psi: 0, availPct: 60 };
+  assert.deepEqual(run.effectiveCap(4, adaptive, [2, 0, 0], 8, calm), { cap: 4, throttled: false, load: 2, why: null });
+  const busy = run.effectiveCap(4, adaptive, [40, 0, 0], 8, calm);
   assert.equal(busy.cap, process.platform === 'win32' ? 4 : 1);
-  assert.equal(run.effectiveCap(1, adaptive, [40, 0, 0], 8).throttled, false);
-  assert.equal(run.effectiveCap(4, { enabled: false, loadPerCpu: 1.5 }, [40, 0, 0], 8).cap, 4);
+  assert.equal(run.effectiveCap(1, adaptive, [40, 0, 0], 8, calm).throttled, false);
+  assert.equal(run.effectiveCap(4, { ...adaptive, enabled: false }, [40, 0, 0], 8, calm).cap, 4);
+});
+
+test('effectiveCap backs off to 1 under memory pressure (PSI or low MemAvailable), not when the signal is missing', () => {
+  if (process.platform === 'win32') return; // adaptive backoff is POSIX only
+  const adaptive = { enabled: true, loadPerCpu: 1.5, memPressurePct: 10, memAvailPct: 10 };
+  const idle = [1, 0, 0];
+  const stalled = run.effectiveCap(4, adaptive, idle, 8, { psi: 42, availPct: 30 });
+  assert.equal(stalled.cap, 1);
+  assert.equal(stalled.why, 'memory');
+  assert.equal(run.effectiveCap(4, adaptive, idle, 8, { psi: 0, availPct: 5 }).why, 'memory');
+  assert.equal(run.effectiveCap(4, adaptive, idle, 8, { psi: null, availPct: null }).cap, 4, 'no /proc (macOS): no memory backoff');
+  assert.equal(run.effectiveCap(4, { ...adaptive, memPressurePct: 0, memAvailPct: 0 }, idle, 8, { psi: 90, availPct: 1 }).cap, 4, '0 disables');
+  assert.equal(run.effectiveCap(4, adaptive, [40, 0, 0], 8, { psi: 90, availPct: 1 }).why, 'load', 'load is reported first');
+});
+
+test('readMemSignal parses /proc/pressure/memory and /proc/meminfo, tolerates missing files', () => {
+  const { readMemSignal } = require('../src/mem');
+  const root = tmpDir();
+  fs.mkdirSync(path.join(root, 'pressure'));
+  fs.writeFileSync(path.join(root, 'pressure', 'memory'), 'some avg10=61.66 avg60=40.00 avg300=72.06 total=1\nfull avg10=6.57 avg60=1 avg300=1 total=1\n');
+  fs.writeFileSync(path.join(root, 'meminfo'), 'MemTotal:       24610432 kB\nMemFree:          159129 kB\nMemAvailable:    2461043 kB\n');
+  const m = readMemSignal(root);
+  assert.equal(m.psi, 61.66);
+  assert.equal(Math.round(m.availPct), 10);
+  assert.deepEqual(readMemSignal(path.join(root, 'nope')), { psi: null, availPct: null });
+});
+
+test('config: adaptive memory thresholds accept 0..100 and fall back on bad values', () => {
+  assert.equal(config.normalize({}).adaptive.memPressurePct, 10);
+  assert.equal(config.normalize({ adaptive: { memPressurePct: 0, memAvailPct: 25 } }).adaptive.memPressurePct, 0);
+  assert.equal(config.normalize({ adaptive: { memAvailPct: 25 } }).adaptive.memAvailPct, 25);
+  assert.equal(config.normalize({ adaptive: { memAvailPct: 150 } }).adaptive.memAvailPct, 10);
+  assert.equal(config.normalize({ adaptive: { memPressurePct: 'x' } }).adaptive.memPressurePct, 10);
 });
 
 test('isWatch refuses real watch modes only (jest -w is --maxWorkers)', () => {
