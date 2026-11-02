@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const pkg = require('../package.json');
-const { szq, mkEnv, mkRepo, tmpDir } = require('./helpers');
+const cp = require('child_process');
+const { ENTRY, szq, mkEnv, mkRepo, tmpDir } = require('./helpers');
 
 test('--version and --help', async () => {
   const { env } = mkEnv();
@@ -85,4 +86,33 @@ test('shims route through the queue and are removable', { skip: process.platform
   const u = await szq(['shim', 'uninstall', '--dir', dir], { env });
   assert.match(u.stdout, /removed \d+ shim/);
   assert.equal(fs.existsSync(path.join(dir, 'tsc')), false);
+});
+
+/** Start szq with a stdout whose reader is already gone (like `szq status | head -0`). */
+function closedReader(args, opts) {
+  const child = cp.spawn(process.execPath, [ENTRY, ...args], { ...opts, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.destroy();
+  let stderr = '';
+  child.stderr.on('data', (b) => (stderr += b));
+  return new Promise((resolve) => child.on('close', (code) => resolve({ code, stderr })));
+}
+
+test('a reader that goes away early is not an error (EPIPE)', async () => {
+  const { env } = mkEnv();
+  const r = await closedReader(['--help'], { env });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /EPIPE|internal error/);
+});
+
+test('a run whose reader went away still finishes, releases its slot and caches its result', async () => {
+  const { env } = mkEnv();
+  const repo = mkRepo();
+  const cmd = ['node', '-e', 'for (let i = 0; i < 20000; i++) console.log("line " + i)'];
+  const r = await closedReader(cmd, { env, cwd: repo });
+  assert.equal(r.code, 0, r.stderr);
+  assert.doesNotMatch(r.stderr, /EPIPE|internal error/);
+  const s = await szq(['status', '--json'], { env });
+  assert.equal(JSON.parse(s.stdout).running.length, 0);
+  const again = await szq(cmd, { env, cwd: repo });
+  assert.match(again.stderr, /cache hit/);
 });
